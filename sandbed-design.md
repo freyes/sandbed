@@ -237,8 +237,9 @@ of running locally — allocate a node (`testflinger-cli reserve`) or reuse a jo
 `device_ip`, `scp` the repo to `ubuntu@<ip>:~/sandbed`, then run
 `uv run sandbed <args>` (testflinger flags stripped). The allocated job id is persisted
 to `$CWD/.sandbed.testflinger.job_id`; a later implicit reserve reuses it if it is live
-(`waiting`/`provision`/`test`/`reserve`) and on the same queue, otherwise submits fresh and
-overwrites the file.
+(`waiting`/`provision`/`test`/`reserve`) and on the same queue, otherwise prints a warning
+(job unknown to testflinger, no longer alive, or other queue), dismisses the stale id, and submits
+fresh, overwriting the file.
 
 ## 10. Variables (defaults)
 

@@ -24,6 +24,9 @@ def _cfg(**kw):
     return load_config("manual", "plan", **base)
 
 
+_NOT_FOUND_ERR = "No data found for that job id.\n"
+
+
 class _Out:
     def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = "") -> None:
         self.stdout = stdout
@@ -151,6 +154,65 @@ def test_new_submit_when_wrong_queue(fake_run, tmp_path, monkeypatch) -> None:
         jid = allocated_job_id(_cfg())
     assert jid == "NEW"
     fake_reserve.assert_called_once()
+
+
+@patch("sandbed.testflinger.run", return_value=_Out(returncode=1, stderr=_NOT_FOUND_ERR))
+def test_job_queue_not_found_raises_without_retry(fake_run) -> None:
+    from sandbed.testflinger import JobNotFoundError, _job_queue
+
+    with pytest.raises(JobNotFoundError):
+        _job_queue("GONE")
+    assert fake_run.call_count == 1
+
+
+@patch("sandbed.testflinger.run", return_value=_Out(returncode=1, stderr=_NOT_FOUND_ERR))
+def test_dismiss_job_id_not_found(fake_run, tmp_path, monkeypatch, capsys) -> None:
+    from sandbed.testflinger import _read_job_id, _write_job_id
+
+    monkeypatch.chdir(tmp_path)
+    _write_job_id("GONE")
+    with patch("sandbed.testflinger._reserve", return_value="NEW") as fake_reserve:
+        jid = allocated_job_id(_cfg())
+    assert jid == "NEW"
+    fake_reserve.assert_called_once()
+    assert _read_job_id() == "NEW"
+    out = capsys.readouterr().out
+    assert "warning" in out
+    assert "GONE" in out
+    assert "not found" in out
+
+
+@patch(
+    "sandbed.testflinger.run",
+    side_effect=[_Out("complete"), _Out(json.dumps({"job_queue": "q"}))],
+)
+def test_dismiss_job_id_not_alive_warns(fake_run, tmp_path, monkeypatch, capsys) -> None:
+    from sandbed.testflinger import _write_job_id
+
+    monkeypatch.chdir(tmp_path)
+    _write_job_id("STALE")
+    with patch("sandbed.testflinger._reserve", return_value="NEW"):
+        allocated_job_id(_cfg())
+    out = capsys.readouterr().out
+    assert "warning" in out
+    assert "STALE" in out
+    assert "complete" in out
+
+
+@patch(
+    "sandbed.testflinger.run",
+    side_effect=[_Out("reserve"), _Out(json.dumps({"job_queue": "other"}))],
+)
+def test_dismiss_job_id_wrong_queue_warns(fake_run, tmp_path, monkeypatch, capsys) -> None:
+    from sandbed.testflinger import _write_job_id
+
+    monkeypatch.chdir(tmp_path)
+    _write_job_id("STALE")
+    with patch("sandbed.testflinger._reserve", return_value="NEW"):
+        allocated_job_id(_cfg())
+    out = capsys.readouterr().out
+    assert "warning" in out
+    assert "other" in out
 
 
 @patch("sandbed.testflinger._submit_job_file", return_value="NEWJOB")

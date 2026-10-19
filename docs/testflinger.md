@@ -71,6 +71,10 @@ submitting a fresh job — provided it is still live and on the requested queue:
   `--testflinger-timeout`, a warning is printed (non-fatal) and the existing allocation is used
   as-is.
 
+If the recorded job can't be reused (testflinger has no record of it, it is no longer alive, or it
+is on a different queue), a warning naming the reason is printed, the dotfile is removed, and a
+fresh job is submitted and recorded.
+
 Precedence: `--testflinger-job <id>` and `--testflinger-job-file <path>` always win — they never
 consult the dotfile; the latter overwrites it with the newly submitted id. The dotfile is *not*
 auto-cleaned on `destroy` or expiry: the next implicit reserve simply re-submits and overwrites it.

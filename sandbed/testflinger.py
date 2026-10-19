@@ -37,6 +37,12 @@ POLL_INTERVAL = 15
 
 TF_MAX_ATTEMPTS = 5
 
+JOB_NOT_FOUND_MSG = "No data found for that job id."
+
+
+class JobNotFoundError(Exception):
+    """Testflinger has no record of the job id."""
+
 
 def _before_sleep_log(retry_state: RetryCallState) -> None:
     exc = retry_state.outcome.exception() if retry_state.outcome else None
@@ -162,8 +168,8 @@ def _job_queue(job_id: str) -> str | None:
     log_path = "/tmp/sandbed.log"
     p = _tf_run(cmd, check=False)
     out = p.stdout
-    if p.stderr == "No data found for that job id.":
-        return None
+    if JOB_NOT_FOUND_MSG in (p.stderr or ""):
+        raise JobNotFoundError(job_id)
     try:
         return json.loads(out).get("job_queue")
     except json.JSONDecodeError:
@@ -172,7 +178,6 @@ def _job_queue(job_id: str) -> str | None:
         console.print(f"[yellow]stdout: {out}[/yellow]")
         console.print(f"[yellow]returncode: {p.returncode}[/yellow]")
         raise RetryableConnectionError(cmd, log_path, p.returncode, p.stderr)
-        return None
 
 
 def _warn_timeout_mismatch(ctx: Config, job_id: str) -> None:
@@ -190,6 +195,22 @@ def _warn_timeout_mismatch(ctx: Config, job_id: str) -> None:
         )
 
 
+def _stale_reason(ctx: Config, job_id: str) -> str | None:
+    """Return why a recorded job id can't be reused, or None if it can."""
+    state = _job_status(job_id)
+    try:
+        queue = _job_queue(job_id)
+    except JobNotFoundError:
+        return "job not found in testflinger"
+    if state not in ALIVE_STATES:
+        return f"job is no longer active (state: {state or 'unknown'})"
+    if queue != ctx.testflinger_queue:
+        return f"job is on queue {queue!r}, requested {ctx.testflinger_queue!r}"
+    _warn_timeout_mismatch(ctx, job_id)
+    console.print(f"reusing testflinger job {job_id} ({state}, queue={queue})")
+    return None
+
+
 def allocated_job_id(ctx: Config) -> str:
     if ctx.testflinger_job:
         return ctx.testflinger_job
@@ -201,12 +222,13 @@ def allocated_job_id(ctx: Config) -> str:
 
     existing = _read_job_id()
     if existing:
-        state = _job_status(existing)
-        queue = _job_queue(existing)
-        if state in ALIVE_STATES and queue == ctx.testflinger_queue:
-            _warn_timeout_mismatch(ctx, existing)
-            console.print(f"reusing testflinger job {existing} ({state}, queue={queue})")
+        reason = _stale_reason(ctx, existing)
+        if reason is None:
             return existing
+        console.print(
+            f"[yellow]warning: dismissing job id {existing} from {JOB_ID_FILE}: {reason}[/yellow]"
+        )
+        Path(JOB_ID_FILE).unlink(missing_ok=True)
 
     job_id = _reserve(ctx)
     _write_job_id(job_id)
