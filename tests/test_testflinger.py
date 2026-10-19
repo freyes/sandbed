@@ -71,6 +71,7 @@ def test_remote_command_strips_flags() -> None:
         "argv",
         [
             "sandbed",
+            "sunbeam",
             "--use-testflinger",
             "--testflinger-queue",
             "q",
@@ -86,7 +87,7 @@ def test_remote_command_strips_flags() -> None:
     assert "--testflinger-key" not in cmd
     assert "q" not in cmd
     assert "lp:user" not in cmd
-    assert cmd.endswith("manual plan")
+    assert cmd.endswith("sunbeam manual plan")
 
 
 def test_write_and_read_job_id(tmp_path, monkeypatch) -> None:

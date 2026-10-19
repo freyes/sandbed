@@ -25,7 +25,7 @@ repo, the `openstack` snap) during the `install-tools` phase — you don't need 
 ## Quickstart — manual provider
 
 ```bash
-sandbed manual up --ssh-key "$(cat ~/.ssh/id_rsa.pub)"
+sandbed sunbeam manual up --ssh-key "$(cat ~/.ssh/id_rsa.pub)"
 ```
 
 This provisions 3 hyperconverged VMs (`cloud-1/2/3`) and drives Sunbeam: bootstrap on `cloud-1`,
@@ -34,7 +34,7 @@ scale out `cloud-2/3`, then `configure`. On success it prints the dashboard URL 
 ## Quickstart — maas provider
 
 ```bash
-sandbed maas up \
+sandbed sunbeam maas up \
   --maas-name mymaas --maas-url http://maas:5240/MAAS --maas-token "$MAAS_API_TOKEN" \
   --ssh-key "$(cat ~/.ssh/id_rsa.pub)"
 ```
@@ -48,7 +48,7 @@ from `sunbeam-client-1`.
 ## Quickstart — Testflinger (remote execution)
 
 ```bash
-sandbed --use-testflinger \
+sandbed sunbeam --use-testflinger \
   --testflinger-queue my-queue --testflinger-key lp:youruser \
   manual plan
 ```

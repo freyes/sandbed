@@ -3,7 +3,7 @@
 ## CLI shape
 
 ```
-sandbed {manual|maas} {up|plan|destroy|sunbeam} [flags]
+sandbed sunbeam {manual|maas} {up|plan|destroy|sunbeam} [flags]
 ```
 
 | Action | Effect |
@@ -31,7 +31,7 @@ re-runs skip completed phases.
 | `--cloud-init-templates-dir` | `templates/cloud-init` | Cloud-init template dir (see [cloud-init templating](cloud-init-templating.md)) |
 | `--use-testflinger` | off | run remotely on a Testflinger-allocated node (see [testflinger](testflinger.md)) |
 
-Run `sandbed --help` for the full list.
+Run `sandbed sunbeam --help` for the full list.
 
 ## Environment variables
 

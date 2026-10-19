@@ -20,5 +20,5 @@
 
 ## Teardown order
 
-Always tear down Sunbeam **before** the VMs: `sandbed manual destroy` (or `maas`) warns on
+Always tear down Sunbeam **before** the VMs: `sandbed sunbeam manual destroy` (or `maas`) warns on
 ordering. The harness runs sunbeam teardown, then `terraform destroy`.

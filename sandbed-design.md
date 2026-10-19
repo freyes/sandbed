@@ -46,7 +46,7 @@ provides the LXD storage pool and the block devices passed to the VMs.
 | Terraform provider | `terraform-lxd/lxd` (Canonical), local unix socket remote |
 | Host storage | **Single-node microceph** (snap), file-backed loop OSD; provides LXD `ceph` pool + RBD `/dev/sdb` to VMs |
 | Guest storage | Sunbeam deploys its **own** microceph inside the VMs, using `/dev/sdb` as its OSD (nested Ceph) |
-| Module structure | Shared `network/` module + `manual/` and `maas/` modules; `sandbed manual\|maas` selects |
+| Module structure | Shared `network/` module + `manual/` and `maas/` modules; `sandbed sunbeam manual\|maas` selects |
 | MAAS VM set | Core HA (10 VMs) + `observability`/`landscape` as variable counts (default 3, settable 0/1) |
 | MAAS control | MAAS `lxd` power driver over HTTPS (`power_type=lxd`); PXE enlist/commission off `generic` |
 | Host contract | Assume LXD + microceph present (or installed by script); script installs terraform + `openstack` snap |
@@ -191,7 +191,7 @@ cloud-init, so their `<node>` overrides are inert.
 
 ## 9. Python entry point `sandbed`
 
-CLI: `sandbed manual|maas {up|plan|destroy|sunbeam} [flags]`. Gated, resumable phases:
+CLI: `sandbed sunbeam manual|maas {up|plan|destroy|sunbeam} [flags]`. Gated, resumable phases:
 
 1. **preflight** — LXD reachable and initialized; KVM accel check; microceph healthy, single-node,
    RBD-enabled; if `--shared-dir` set, verify host path exists.

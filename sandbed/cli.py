@@ -17,7 +17,15 @@ from .sunbeam import deploy_sunbeam
 PHASES = ["preflight", "install-tools", "terraform", "maas-setup", "sunbeam"]
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+
+
+@click.group(context_settings=CONTEXT_SETTINGS)
+def cli() -> None:
+    """Sandbed: disposable sandbox environments."""
+
+
+@cli.command(context_settings=CONTEXT_SETTINGS)
 @click.argument("provider", type=click.Choice(["manual", "maas"]))
 @click.argument("action", type=click.Choice(["up", "plan", "destroy", "sunbeam"]))
 @click.option("--mgmt-cidr")
@@ -48,7 +56,7 @@ PHASES = ["preflight", "install-tools", "terraform", "maas-setup", "sunbeam"]
 @click.option("--testflinger-job")
 @click.option("--testflinger-job-file")
 @click.option("--testflinger-key", multiple=True)
-def cli(provider: str, action: str, **flags) -> None:
+def sunbeam(provider: str, action: str, **flags) -> None:
     """Deploy Canonical OpenStack (Sunbeam) on LXD virtual machines."""
     ctx = load_config(provider, action, **{k: v for k, v in flags.items() if v is not None})
     state = PhaseState(ctx.state_file)
