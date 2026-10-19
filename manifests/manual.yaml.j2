@@ -1,0 +1,18 @@
+core:
+  config:
+    bootstrap:
+      roles: [control, compute, storage]
+    region: "{{ region }}"
+    project-network: "{{ project_network }}"
+  software:
+    juju:
+      bootstrap:
+        series: noble
+    charms:
+      openstack-hypervisor:
+        series: noble
+storage:
+  microceph:
+    osd-devices:
+      - /dev/sdb
+features: {}

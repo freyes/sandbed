@@ -1,0 +1,32 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run ruff check .
+
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run pytest
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform -chdir=terraform/network init -backend=false
+      - run: terraform -chdir=terraform/network validate
+      - run: terraform -chdir=terraform/network fmt -check
+      - run: terraform -chdir=terraform/manual init -backend=false
+      - run: terraform -chdir=terraform/manual validate
+      - run: terraform -chdir=terraform/manual fmt -check
+      - run: terraform -chdir=terraform/maas init -backend=false
+      - run: terraform -chdir=terraform/maas validate
+      - run: terraform -chdir=terraform/maas fmt -check

@@ -1,0 +1,94 @@
+# ─── Terraform ───────────────────────────────────────────────
+# Local state and secrets must never be committed.
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.example.tfvars
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform/
+.terraform.lock.hcl
+# Keep .tf.lock if you pin providers; uncomment to ignore:
+# *.tf.lock
+
+# ─── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / builds
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ─── libvirt / QEMU ───────────────────────────────────────────
+# Locally generated VM images, libvirt runtime state.
+*.img
+*.qcow2
+*.raw
+!cloud-init.img.example
+*.pid
+libvirt-*.xml
+
+# ─── Secrets / env ────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+!*.example.pem
+.pypirc
+
+# ─── Tooling / agent state (local only) ───────────────────────
+.omo/
+.codegraph/
+.ipynb_checkpoints/
+
+# ─── User hooks (executables), keep only the README ────────────
+hooks/*
+!hooks/README.md
+
+# ─── User cloud-init templates, keep only the README ───────────
+templates/cloud-init/*
+!templates/cloud-init/README.md
+
+# ─── Runtime state (local only) ────────────────────────────────
+.sandbed.testflinger.job_id
+tmp*.yaml
+
+# ─── Editors / IDE ────────────────────────────────────────────
+.idea/
+.vscode/
+
+# ─── OS ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Logs ────────────────────────────────────────────────────
+*.log

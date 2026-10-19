@@ -1,0 +1,15 @@
+core:
+  config:
+    bootstrap:
+      roles: [control]
+    region: "{{ region }}"
+    db-topology: "{{ db_topology }}"
+  software:
+    juju:
+      bootstrap:
+        series: noble
+deployment:
+  name: "{{ deployment_name }}"
+  provider: maas
+  url: "{{ maas_url }}"
+  token: "{{ maas_token }}"
