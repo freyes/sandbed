@@ -530,3 +530,40 @@ def test_run_waits_for_ssh_then_syncs_authorizes_preps_and_runs(monkeypatch) -> 
     monkeypatch.setattr(testflinger, "run_remote", lambda ctx, host: calls.append("run") or 0)
     assert testflinger.run_(_cfg()) == 0
     assert calls == ["wait", "sync", "authorize", "prep", "run"]
+
+
+def test_run_remote_and_prep_host_run_detached_on_the_node(monkeypatch) -> None:
+    from sandbed import testflinger
+
+    seen: list[tuple[list[str], str, str]] = []
+
+    def fake_detached(ssh_base, name, command, **_kwargs):
+        seen.append((ssh_base, name, command))
+        return 7
+
+    monkeypatch.setattr(testflinger, "run_detached", fake_detached)
+    monkeypatch.setattr("sys.argv", ["sandbed", "sunbeam", "manual", "up"])
+    ctx = _cfg()
+    assert testflinger.run_remote(ctx, "1.2.3.4") == 7
+    assert testflinger.prep_host(ctx, "1.2.3.4") == 7
+    (run_base, run_name, run_cmd), (prep_base, prep_name, prep_cmd) = seen
+    assert run_base[0] == "ssh" and run_base[-1] == "ubuntu@1.2.3.4"
+    assert "ServerAliveInterval=15" in run_base
+    assert (run_name, prep_name) == ("run", "prep-host")
+    assert run_cmd == "cd ~/sandbed && uv run sandbed sunbeam manual up"
+    assert prep_cmd.startswith("cd ~/sandbed && sudo ./scripts/prep-host.sh")
+
+
+def test_run_stops_when_preparing_the_host_fails(monkeypatch) -> None:
+    from sandbed import testflinger
+
+    calls: list[str] = []
+    monkeypatch.setattr(testflinger, "allocated_job_id", lambda ctx: "J")
+    monkeypatch.setattr(testflinger, "wait_for_device", lambda ctx, job: "1.2.3.4")
+    monkeypatch.setattr(testflinger, "wait_for_ssh", lambda host: None)
+    monkeypatch.setattr(testflinger, "scp_repo", lambda ctx, host: None)
+    monkeypatch.setattr(testflinger, "authorize_key", lambda ctx, host: None)
+    monkeypatch.setattr(testflinger, "prep_host", lambda ctx, host: 3)
+    monkeypatch.setattr(testflinger, "run_remote", lambda ctx, host: calls.append("run") or 0)
+    assert testflinger.run_(_cfg()) == 3
+    assert calls == []

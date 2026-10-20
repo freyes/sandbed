@@ -25,9 +25,12 @@ from tenacity import (
 from .config import Config
 from .console import console
 from .manifest import render
+from .remote import run_detached
 from .shell import RetryableConnectionError, is_transient_connection_error, run
 
 SSH_OPTS = ["-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=/dev/null"]
+# Notice a dead connection within a minute instead of hanging on it.
+SSH_KEEPALIVE = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
 
 JOB_ID_FILE = ".sandbed.testflinger.job_id"
 
@@ -362,14 +365,18 @@ def authorize_key(ctx: Config, host: str) -> None:
     run(["ssh", *SSH_OPTS, f"ubuntu@{host}", cmd])
 
 
+def _node(host: str) -> list[str]:
+    return ["ssh", *SSH_OPTS, *SSH_KEEPALIVE, f"ubuntu@{host}"]
+
+
 def prep_host(ctx: Config, host: str) -> int:
     cmd = (
         "cd ~/sandbed && "
         f"sudo ./scripts/prep-host.sh {shlex.quote(ctx.microceph_disk_size)}"
     )
     console.print("preparing host...")
-    p = run(["ssh", *SSH_OPTS, f"ubuntu@{host}", cmd], capture_output=False)
-    return p.returncode
+    # detached on the node: survives a dropped ssh connection
+    return run_detached(_node(host), "prep-host", cmd)
 
 
 def remote_command(ctx: Config) -> str:
@@ -401,8 +408,8 @@ def remote_command(ctx: Config) -> str:
 
 
 def run_remote(ctx: Config, host: str) -> int:
-    p = run(["ssh", *SSH_OPTS, f"ubuntu@{host}", remote_command(ctx)], capture_output=False)
-    return p.returncode
+    # detached on the node: survives a dropped ssh connection and is re-attached after one
+    return run_detached(_node(host), "run", remote_command(ctx))
 
 
 def run_(ctx: Config) -> int:
@@ -413,5 +420,8 @@ def run_(ctx: Config) -> int:
     wait_for_ssh(host)
     scp_repo(ctx, host)
     authorize_key(ctx, host)
-    prep_host(ctx, host)
+    prep_status = prep_host(ctx, host)
+    if prep_status != 0:
+        console.print(f"[red]preparing the host failed (exit {prep_status})[/red]")
+        return prep_status
     return run_remote(ctx, host)

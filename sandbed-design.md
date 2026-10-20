@@ -282,7 +282,10 @@ working directory (`.sandbed_ed25519`, only if absent), authorizes its public ha
 **Testflinger:** with `--use-testflinger`, the invocation is delegated to remote execution instead
 of running locally — allocate a node (`testflinger-cli reserve`) or reuse a job, wait for its
 `device_ip` and for `ssh` to be accepted (retry every 15 s, up to 5 min), `rsync` the repo (minus `.venv`, `__pycache__`, `*.pyc`, `.pytest_cache`, `.ruff_cache`, `.terraform`) to `ubuntu@<ip>:~/sandbed`, then run
-`uv run sandbed <args>` (testflinger flags stripped). The allocated job id is persisted
+`uv run sandbed <args>` (testflinger flags stripped). The host preparation and the remote run are
+started detached under `nohup` on the node (`~/.sandbed-jobs/<name>.{log,pid,rc}`) and followed over
+ssh; a dropped connection is re-established (every 15 s, up to 5 min) and following resumes from the
+last complete line, and re-running attaches to a job that is still running. The allocated job id is persisted
 to `$CWD/.sandbed.testflinger.job_id`; a later implicit reserve reuses it if it is live
 (`waiting`/`provision`/`test`/`reserve`) and on the same queue, otherwise prints a warning
 (job unknown to testflinger, no longer alive, or other queue), dismisses the stale id, and submits

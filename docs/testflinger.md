@@ -8,7 +8,8 @@ queue, instead of locally:
    to 5 min: a node can be up before its `authorized_keys` is populated),
 3. remove any stale `~/sandbed/.venv` on the node, then `rsync` the local repo to `ubuntu@<ip>:~/sandbed` (excluding `.venv`, `__pycache__`, `*.pyc`,
    `.pytest_cache`, `.ruff_cache`, `.terraform`),
-4. run `uv run sandbed <args>` on the remote node (testflinger flags stripped).
+4. prepare the node and run `uv run sandbed <args>` on it (testflinger flags stripped). Both run
+   detached under `nohup` on the node, so they survive a dropped ssh connection (see below).
 
 The dedicated SSH key (`.sandbed_ed25519`, see [usage](usage.md#ssh-key)) lives in the working
 directory, so step 3 copies its private half to the node, and the public half is appended to the
@@ -84,3 +85,21 @@ fresh job is submitted and recorded.
 Precedence: `--testflinger-job <id>` and `--testflinger-job-file <path>` always win — they never
 consult the dotfile; the latter overwrites it with the newly submitted id. The dotfile is *not*
 auto-cleaned on `destroy` or expiry: the next implicit reserve simply re-submits and overwrites it.
+
+## Surviving a dropped connection
+
+The node preparation and the remote `sandbed` run are started detached (`nohup`, in
+`~/.sandbed-jobs/<name>.{log,pid,rc}` on the node, names `prep-host` and `run`). The local sandbed
+then follows the log over ssh, with keepalives. If the connection drops, the job keeps running on
+the node; sandbed reconnects every 15 s for up to 5 min and resumes from the last complete line, so
+no output is repeated. The exit status comes from the `.rc` file, so it is propagated even after a
+reconnect.
+
+If the local sandbed itself is interrupted (Ctrl-C, closed laptop), the job still runs. Run the same
+command again: a job that is still running is attached to instead of started a second time, and a
+finished one is started afresh. Inspect it by hand with `tail -f ~/.sandbed-jobs/run.log` on the node.
+
+Not detached: the short setup commands (ssh probe, stale `.venv` removal, `authorized_keys`), and the
+ssh calls that `sandbed` itself makes from the node to the client VM. The latter are protected
+anyway when you use `--use-testflinger`, because the whole remote run is detached.
+
