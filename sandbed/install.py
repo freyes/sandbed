@@ -61,5 +61,3 @@ def install(ctx: Config) -> None:
         run(["sudo", "apt-get", "install", "-y", "terraform"])
     if not _installed(["snap", "list", "openstack"]):
         run(["sudo", "snap", "install", "openstack"])
-    if ctx.provider == "maas" and not _installed(["maas", "--version"]):
-        run(["sudo", "snap", "install", "maas"])  # CLI only; region/rack assumed external

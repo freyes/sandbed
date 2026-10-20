@@ -61,3 +61,13 @@ def test_verify_ceph_creates_missing_rbd_pool(fake_run) -> None:
 def test_verify_ceph_no_osd_raises(fake_run) -> None:
     with pytest.raises(PhaseError):
         verify_ceph(load_config("manual", "up"))
+
+@patch("sandbed.install.verify_ceph")
+@patch("sandbed.install._installed", return_value=False)
+@patch("sandbed.install.run")
+def test_install_maas_does_not_install_host_maas_snap(fake_run, _installed, _verify) -> None:
+    fake_run.return_value = _Out("/dev/loop9")
+    install(load_config("maas", "up"))
+    cmds = [c.args[0] for c in fake_run.call_args_list]
+    assert ["sudo", "snap", "install", "openstack"] in cmds
+    assert ["sudo", "snap", "install", "maas"] not in cmds
