@@ -1,8 +1,12 @@
 """Run long commands on a remote host so they survive a dropped ssh connection.
 
-The command is started detached (`nohup`, output to a log file, exit status to a file) in one short
-ssh call. The client then follows the log over ssh; if that connection drops, it reconnects and
-resumes from the last complete line it showed. The exit status is read from the file at the end.
+The command is started detached (`nohup`, its own session, output to a log file, exit status to a
+file) in one short ssh call. The client then follows the log over ssh; if that connection drops, it
+reconnects and resumes from the last complete line it showed. The exit status is read from the
+file at the end.
+
+Ctrl+C stops only the local follower. A second Ctrl+C within STOP_GRACE seconds also kills the job
+on the node (its whole process group).
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ JOBS_DIR = "~/.sandbed-jobs"
 RECONNECT_TIMEOUT = 300
 RECONNECT_INTERVAL = 15
 CONNECTION_LOST = 255  # ssh's own failure status
+STOP_GRACE = 5  # seconds in which a second Ctrl+C stops the job on the node
 
 
 def _base(name: str) -> str:
@@ -28,21 +33,38 @@ def _base(name: str) -> str:
 
 def start_script(name: str, command: str) -> str:
     base = _base(name)
-    # a subshell, so a command that calls `exit` still lets the status be recorded
-    inner = f"({command}); echo $? > {base}.rc"
+    # `setsid` makes the job its own process group leader, so `$$` is also the group id and the
+    # whole tree can be signalled later. A subshell lets a command that calls `exit` still have
+    # its status recorded.
+    inner = f"echo $$ > {base}.pid; ({command}); echo $? > {base}.rc"
     return (
         f"mkdir -p {JOBS_DIR} && "
         f'if [ -f {base}.pid ] && kill -0 "$(cat {base}.pid)" 2>/dev/null; '
         "then echo attach; exit 0; fi; "
-        f"rm -f {base}.rc {base}.log; "
-        f"nohup sh -c {shlex.quote(inner)} > {base}.log 2>&1 < /dev/null & "
-        f"echo $! > {base}.pid; echo started"
+        f"rm -f {base}.pid {base}.rc {base}.log; "
+        f"nohup setsid sh -c {shlex.quote(inner)} > {base}.log 2>&1 < /dev/null & "
+        "echo started"
     )
 
 
 def follow_script(name: str, seen_lines: int) -> str:
     base = _base(name)
-    return f"tail -n +{seen_lines + 1} -f --pid=$(cat {base}.pid) {base}.log"
+    # the job writes its own pid file, so give it a moment to appear
+    return (
+        f"i=0; while [ ! -s {base}.pid ] && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done; "
+        f"tail -n +{seen_lines + 1} -f --pid=$(cat {base}.pid) {base}.log"
+    )
+
+
+def stop_script(name: str) -> str:
+    """Kill the job's process group and record status 130. Does nothing once it has finished."""
+    base = _base(name)
+    return (
+        f"pid=$(cat {base}.pid 2>/dev/null); "
+        f'if [ -n "$pid" ] && [ ! -f {base}.rc ]; then '
+        "kill -s TERM -- -$pid 2>/dev/null; sleep 2; kill -s KILL -- -$pid 2>/dev/null; "
+        f"echo 130 > {base}.rc; fi; echo stopped"
+    )
 
 
 def _status_script(name: str) -> str:
@@ -110,12 +132,24 @@ def run_detached(
     try:
         return _follow_to_completion(ssh_base, name, timeout, interval)
     except KeyboardInterrupt:
-        console.print(
-            f"\n[yellow]interrupted: {name} keeps running on the node. Run the same command "
-            f"again to reattach, or stop it with:\n  ssh {ssh_base[-1]} "
-            f"'kill $(cat {_base(name)}.pid)'[/yellow]"
-        )
-        raise SystemExit(130) from None
+        _interrupted(ssh_base, name)
+
+
+def _interrupted(ssh_base: list[str], name: str) -> None:
+    """A first Ctrl+C detaches; a second within STOP_GRACE seconds kills the job. Never returns."""
+    console.print(
+        f"\n[yellow]interrupted: {name} keeps running on the node. Press Ctrl+C again within "
+        f"{STOP_GRACE}s to stop it; otherwise run the same command again to reattach, or stop it "
+        f"later with:\n  ssh {ssh_base[-1]} 'kill -s TERM -- -$(cat {_base(name)}.pid)'[/yellow]"
+    )
+    try:
+        for _ in range(STOP_GRACE):
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print(f"[red]stopping {name} on the node...[/red]")
+        run([*ssh_base, stop_script(name)], check=False)
+        console.print(f"[red]{name} stopped[/red]")
+    raise SystemExit(130) from None
 
 
 def _follow_to_completion(

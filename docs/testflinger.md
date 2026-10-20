@@ -95,11 +95,16 @@ the node; sandbed reconnects every 15 s for up to 5 min and resumes from the las
 no output is repeated. The exit status comes from the `.rc` file, so it is propagated even after a
 reconnect.
 
-Ctrl+C stops only the local follower: sandbed exits with status 130 and prints how to stop the job
-(`ssh ubuntu@<ip> 'kill $(cat ~/.sandbed-jobs/run.pid)'`). The job on the node is not signalled and keeps
-running. If the local sandbed is interrupted in any other way (closed laptop), the job still runs too. Run the same
-command again: a job that is still running is attached to instead of started a second time, and a
-finished one is started afresh. Inspect it by hand with `tail -f ~/.sandbed-jobs/run.log` on the node.
+Ctrl+C is two-step:
+
+- **Once:** only the local follower stops. sandbed prints how to stop the job and exits with status
+  130; the job on the node keeps running.
+- **Twice, within 5 s:** sandbed also kills the job on the node. The job runs in its own process
+  group, so the whole tree is signalled (TERM, then KILL after 2 s) and status 130 is recorded.
+
+If the local sandbed is interrupted in any other way (closed laptop), the job still runs. Run the
+same command again: a job that is still running is attached to instead of started a second time, and
+a finished one is started afresh. Inspect it by hand with `tail -f ~/.sandbed-jobs/run.log` on the node.
 
 Not detached: the short setup commands (ssh probe, stale `.venv` removal, `authorized_keys`), and the
 ssh calls that `sandbed` itself makes from the node to the client VM. The latter are protected

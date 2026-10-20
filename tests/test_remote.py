@@ -54,9 +54,10 @@ class _Proc:
 
 def test_start_script_detaches_under_nohup_and_logs_to_files() -> None:
     script = remote.start_script("run", "cd ~/sandbed && uv run sandbed sunbeam manual up")
-    assert "nohup sh -c" in script
+    assert "nohup setsid sh -c" in script
     assert "> ~/.sandbed-jobs/run.log 2>&1 < /dev/null &" in script
-    assert "echo $! > ~/.sandbed-jobs/run.pid" in script
+    # the job is its own process group leader and records its own pid (== pgid)
+    assert "echo $$ > ~/.sandbed-jobs/run.pid" in script
     # the exit status is written to a file so a reconnecting client can read it
     assert "echo $? > ~/.sandbed-jobs/run.rc" in script
     # a job that is still running is attached to, never started twice
@@ -65,13 +66,24 @@ def test_start_script_detaches_under_nohup_and_logs_to_files() -> None:
 
 def test_start_script_quotes_the_command() -> None:
     script = remote.start_script("run", "echo 'it''s' && true")
-    inner = shlex.split(script.split("nohup sh -c ")[1])[0]
-    assert inner.startswith("(echo 'it''s' && true); echo $? > ")
+    inner = shlex.split(script.split("nohup setsid sh -c ")[1])[0]
+    assert "(echo 'it''s' && true); echo $? > " in inner
 
 
 def test_follow_script_resumes_at_the_given_line() -> None:
     script = remote.follow_script("run", 41)
-    assert script == "tail -n +42 -f --pid=$(cat ~/.sandbed-jobs/run.pid) ~/.sandbed-jobs/run.log"
+    assert script.endswith(
+        "tail -n +42 -f --pid=$(cat ~/.sandbed-jobs/run.pid) ~/.sandbed-jobs/run.log"
+    )
+    # the pid file is written by the job itself, so wait (bounded) for it to appear
+    assert "while [ ! -s ~/.sandbed-jobs/run.pid ]" in script
+
+
+def test_stop_script_kills_the_whole_process_group_and_records_the_status() -> None:
+    script = remote.stop_script("run")
+    assert "kill -s TERM -- -$pid" in script
+    assert "kill -s KILL -- -$pid" in script
+    assert "echo 130 > ~/.sandbed-jobs/run.rc" in script
 
 
 @patch("sandbed.remote.subprocess.Popen")
@@ -81,10 +93,10 @@ def test_run_detached_returns_the_remote_exit_status(fake_run, fake_popen, clock
     fake_popen.return_value = _Proc(["one\n", "two\n"], 0)
     assert remote.run_detached(SSH, "run", "true") == 0
     start_cmd, rc_cmd = (c.args[0] for c in fake_run.call_args_list)
-    assert start_cmd[:4] == SSH and "nohup sh -c" in start_cmd[-1]
+    assert start_cmd[:4] == SSH and "nohup setsid sh -c" in start_cmd[-1]
     assert rc_cmd[:4] == SSH and "run.rc" in rc_cmd[-1]
     follow_cmd = fake_popen.call_args.args[0]
-    assert follow_cmd[:4] == SSH and follow_cmd[-1].startswith("tail -n +1 -f")
+    assert follow_cmd[:4] == SSH and "tail -n +1 -f" in follow_cmd[-1]
 
 
 @patch("sandbed.remote.subprocess.Popen")
@@ -105,8 +117,8 @@ def test_run_detached_reattaches_after_a_dropped_connection(fake_run, fake_popen
     ]
     assert remote.run_detached(SSH, "run", "true") == 0
     first, second = (c.args[0][-1] for c in fake_popen.call_args_list)
-    assert first.startswith("tail -n +1 -f")
-    assert second.startswith("tail -n +3 -f")  # two complete lines were already shown
+    assert "tail -n +1 -f" in first
+    assert "tail -n +3 -f" in second  # two complete lines were already shown
     assert clock.sleeps == [15]
 
 
@@ -183,7 +195,7 @@ class _InterruptedProc(_Proc):
 
 @patch("sandbed.remote.subprocess.Popen")
 @patch("sandbed.remote.run")
-def test_ctrl_c_leaves_the_job_running_and_says_how_to_stop_it(
+def test_single_ctrl_c_detaches_and_leaves_the_job_running(
     fake_run, fake_popen, clock, capsys
 ) -> None:
     fake_run.side_effect = [_out("started\n")]
@@ -192,9 +204,31 @@ def test_ctrl_c_leaves_the_job_running_and_says_how_to_stop_it(
     with pytest.raises(SystemExit) as exc:
         remote.run_detached(SSH, "run", "true")
     assert exc.value.code == 130
-    assert proc.terminated  # only the local follower is stopped
+    assert proc.terminated  # the local follower is stopped
     assert fake_run.call_count == 1  # nothing was sent to kill the remote job
+    assert clock.sleeps and sum(clock.sleeps) == remote.STOP_GRACE
     out = capsys.readouterr().out
+    assert "Ctrl+C again" in out
     assert "keeps running on the node" in out
-    assert "kill $(cat ~/.sandbed-jobs/run.pid)" in out
-    assert "ubuntu@1.2.3.4" in out
+    assert "ssh ubuntu@1.2.3.4" in out and "run.pid" in out
+
+
+@patch("sandbed.remote.subprocess.Popen")
+@patch("sandbed.remote.run")
+def test_second_ctrl_c_kills_the_job_on_the_node(
+    fake_run, fake_popen, clock, monkeypatch, capsys
+) -> None:
+    fake_run.side_effect = [_out("started\n"), _out("stopped\n")]
+    fake_popen.return_value = _InterruptedProc()
+
+    def interrupted_sleep(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(remote.time, "sleep", interrupted_sleep)
+    with pytest.raises(SystemExit) as exc:
+        remote.run_detached(SSH, "run", "true")
+    assert exc.value.code == 130
+    kill_cmd = fake_run.call_args_list[1].args[0]
+    assert kill_cmd[:4] == SSH
+    assert kill_cmd[-1] == remote.stop_script("run")
+    assert "stopped" in capsys.readouterr().out
