@@ -78,13 +78,17 @@ def _follow(ssh_base: list[str], name: str, seen: int) -> tuple[int, int]:
         text=True,
         bufsize=1,
     )
-    for line in proc.stdout:
-        if not line.endswith("\n"):
-            break  # cut off by the drop; the whole line is replayed after reconnecting
-        console.print(Text.from_ansi(line), end="")
-        console.file.flush()
-        seen += 1
-    return proc.wait(), seen
+    try:
+        for line in proc.stdout:
+            if not line.endswith("\n"):
+                break  # cut off by the drop; the whole line is replayed after reconnecting
+            console.print(Text.from_ansi(line), end="")
+            console.file.flush()
+            seen += 1
+        return proc.wait(), seen
+    finally:
+        if proc.poll() is None:
+            proc.terminate()  # only the local follower; the job on the node is left alone
 
 
 def run_detached(
@@ -103,6 +107,20 @@ def run_detached(
     if "attach" in (started.stdout or ""):
         console.print(f"[yellow]{name} is already running on the node; attaching[/yellow]")
 
+    try:
+        return _follow_to_completion(ssh_base, name, timeout, interval)
+    except KeyboardInterrupt:
+        console.print(
+            f"\n[yellow]interrupted: {name} keeps running on the node. Run the same command "
+            f"again to reattach, or stop it with:\n  ssh {ssh_base[-1]} "
+            f"'kill $(cat {_base(name)}.pid)'[/yellow]"
+        )
+        raise SystemExit(130) from None
+
+
+def _follow_to_completion(
+    ssh_base: list[str], name: str, timeout: int, interval: int
+) -> int:
     seen = 0
     lost_since: float | None = None
     while True:

@@ -95,7 +95,9 @@ the node; sandbed reconnects every 15 s for up to 5 min and resumes from the las
 no output is repeated. The exit status comes from the `.rc` file, so it is propagated even after a
 reconnect.
 
-If the local sandbed itself is interrupted (Ctrl-C, closed laptop), the job still runs. Run the same
+Ctrl+C stops only the local follower: sandbed exits with status 130 and prints how to stop the job
+(`ssh ubuntu@<ip> 'kill $(cat ~/.sandbed-jobs/run.pid)'`). The job on the node is not signalled and keeps
+running. If the local sandbed is interrupted in any other way (closed laptop), the job still runs too. Run the same
 command again: a job that is still running is attached to instead of started a second time, and a
 finished one is started afresh. Inspect it by hand with `tail -f ~/.sandbed-jobs/run.log` on the node.
 

@@ -45,6 +45,12 @@ class _Proc:
     def wait(self) -> int:
         return self.returncode
 
+    def poll(self):
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+
 
 def test_start_script_detaches_under_nohup_and_logs_to_files() -> None:
     script = remote.start_script("run", "cd ~/sandbed && uv run sandbed sunbeam manual up")
@@ -156,3 +162,39 @@ def test_run_detached_attaches_to_a_running_job(fake_run, fake_popen, clock) -> 
     fake_popen.return_value = _Proc(["resumed\n"], 0)
     assert remote.run_detached(SSH, "run", "true") == 0
     fake_popen.assert_called_once()
+
+
+class _InterruptedProc(_Proc):
+    """`ssh ... tail -f` whose reader is interrupted by Ctrl+C."""
+
+    def __init__(self) -> None:
+        super().__init__([], None)
+        self.terminated = False
+
+        def lines():
+            yield "tick 1\n"
+            raise KeyboardInterrupt
+
+        self.stdout = lines()
+
+    def poll(self):
+        return None
+
+
+@patch("sandbed.remote.subprocess.Popen")
+@patch("sandbed.remote.run")
+def test_ctrl_c_leaves_the_job_running_and_says_how_to_stop_it(
+    fake_run, fake_popen, clock, capsys
+) -> None:
+    fake_run.side_effect = [_out("started\n")]
+    proc = _InterruptedProc()
+    fake_popen.return_value = proc
+    with pytest.raises(SystemExit) as exc:
+        remote.run_detached(SSH, "run", "true")
+    assert exc.value.code == 130
+    assert proc.terminated  # only the local follower is stopped
+    assert fake_run.call_count == 1  # nothing was sent to kill the remote job
+    out = capsys.readouterr().out
+    assert "keeps running on the node" in out
+    assert "kill $(cat ~/.sandbed-jobs/run.pid)" in out
+    assert "ubuntu@1.2.3.4" in out
