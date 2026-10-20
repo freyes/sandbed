@@ -111,6 +111,10 @@ def _instance_extra(ctx: Config) -> dict:
     }
 
 
+INIT = ["init", "-backend=false"]
+APPLY = ["apply", "-auto-approve"]
+
+
 def _maas_env(ctx: Config) -> dict:
     # The admin password reaches terraform through the environment, not `-var`, so it never
     # shows up in `ps`.
@@ -138,16 +142,15 @@ def _tf(
 
 
 def apply(ctx: Config) -> None:
-    _tf(ctx, "network", ["init", "-backend=false"])
-    _tf(ctx, "network", ["apply", "-auto-approve"], _vars_for(ctx, "network"))
+    # init and apply stream straight to the terminal so the user sees progress.
+    _tf(ctx, "network", INIT, capture_output=False)
+    _tf(ctx, "network", APPLY, _vars_for(ctx, "network"), capture_output=False)
     if ctx.provider in ("manual", "maas"):
-        p = _tf(ctx, ctx.provider, ["init", "-backend=false"])
-        console.print(f"[bold]Terraform init for {ctx.provider}[/bold]")
-        console.print(Text.from_ansi(p.stdout))
+        _tf(ctx, ctx.provider, INIT, capture_output=False)
         _tf(
             ctx,
             ctx.provider,
-            ["apply", "-auto-approve"],
+            APPLY,
             _vars_for(ctx, ctx.provider, _instance_extra(ctx)),
             capture_output=False,
             env=_env_for(ctx),
@@ -155,7 +158,7 @@ def apply(ctx: Config) -> None:
 
 
 def plan(ctx: Config, name: str) -> None:
-    _tf(ctx, name, ["init", "-backend=false"])
+    _tf(ctx, name, INIT, capture_output=False)
     if name == "network":
         p = _tf(ctx, name, ["plan"], _vars_for(ctx, "network"))
     else:
@@ -198,8 +201,8 @@ def resolve_maas(ctx: Config, required: bool = True) -> None:
 
 
 def apply_maas_config(ctx: Config) -> None:
-    _tf(ctx, "maas-config", ["init", "-backend=false"])
-    args = ["apply", "-auto-approve"]
+    _tf(ctx, "maas-config", INIT, capture_output=False)
+    args = list(APPLY)
     if ctx.maas_parallelism:
         args.append(f"-parallelism={ctx.maas_parallelism}")
     _tf(ctx, "maas-config", args, _vars_for(ctx, "maas-config"), capture_output=False)

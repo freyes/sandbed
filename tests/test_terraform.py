@@ -141,3 +141,47 @@ def test_manual_destroy_unchanged(fake_run) -> None:
     calls = fake_run.call_args_list
     assert [c.args[0][1] for c in calls] == ["-chdir=terraform/manual", "-chdir=terraform/network"]
     assert all("env" not in c.kwargs for c in calls)
+
+
+def _streams(call) -> bool:
+    return call.kwargs.get("capture_output", True) is False
+
+
+def _terraform_calls(fake_run, verb: str) -> list:
+    return [c for c in fake_run.call_args_list if c.args[0][2] == verb]
+
+
+@pytest.mark.parametrize("provider", ["manual", "maas"])
+@patch("sandbed.terraform.run")
+def test_apply_streams_every_init_and_apply(fake_run, provider) -> None:
+    fake_run.return_value = _out()
+    terraform.apply(load_config(provider, "up", ssh_key="k"))
+    inits = _terraform_calls(fake_run, "init")
+    applies = _terraform_calls(fake_run, "apply")
+    assert len(inits) == 2 and len(applies) == 2
+    assert all(_streams(c) for c in inits + applies)
+
+
+@patch("sandbed.terraform.run")
+def test_apply_keeps_capturing_output_queries(fake_run) -> None:
+    fake_run.return_value = _out()
+    terraform.apply(load_config("manual", "up", ssh_key="k"))
+    outputs = _terraform_calls(fake_run, "output")
+    assert outputs and not any(_streams(c) for c in outputs)
+
+
+@patch("sandbed.terraform.run")
+def test_apply_maas_config_streams_init_and_apply(fake_run) -> None:
+    fake_run.return_value = _out()
+    terraform.apply_maas_config(load_config("maas", "up", ssh_key="k"))
+    calls = fake_run.call_args_list
+    assert [c.args[0][2] for c in calls] == ["init", "apply"]
+    assert all(_streams(c) for c in calls)
+
+
+@patch("sandbed.terraform.run")
+def test_plan_streams_init_but_captures_the_plan(fake_run) -> None:
+    fake_run.return_value = _out()
+    terraform.plan(load_config("manual", "plan", ssh_key="k"), "manual")
+    assert all(_streams(c) for c in _terraform_calls(fake_run, "init"))
+    assert not any(_streams(c) for c in _terraform_calls(fake_run, "plan"))
