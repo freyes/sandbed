@@ -93,6 +93,17 @@ def test_remote_command_strips_flags() -> None:
     assert cmd.endswith("sunbeam manual plan")
 
 
+@patch("sandbed.testflinger.run")
+def test_scp_repo_excludes_local_artifacts(fake_run) -> None:
+    from sandbed.testflinger import scp_repo
+
+    scp_repo(_cfg(), "1.2.3.4")
+    cmd = fake_run.call_args.args[0]
+    excludes = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--exclude"]
+    assert excludes == [".venv", "__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache"]
+    assert cmd[-2:] == [".", "ubuntu@1.2.3.4:~/sandbed"]
+
+
 def test_write_and_read_job_id(tmp_path, monkeypatch) -> None:
     from sandbed.testflinger import _read_job_id, _write_job_id
 

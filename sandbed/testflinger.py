@@ -37,6 +37,8 @@ POLL_INTERVAL = 15
 
 TF_MAX_ATTEMPTS = 5
 
+RSYNC_EXCLUDES = [".venv", "__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache"]
+
 JOB_NOT_FOUND_MSG = "No data found for that job id."
 
 
@@ -294,10 +296,12 @@ def wait_for_device(ctx: Config, job_id: str) -> str:
 
 def scp_repo(ctx: Config, host: str) -> None:
     rsync_ssh = ["ssh", *SSH_OPTS]
+    excludes = [arg for pattern in RSYNC_EXCLUDES for arg in ("--exclude", pattern)]
     run(
         [
             "rsync",
             "-avr",
+            *excludes,
             "-e",
             " ".join(rsync_ssh),
             ".",

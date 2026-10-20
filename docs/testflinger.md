@@ -5,7 +5,8 @@ queue, instead of locally:
 
 1. allocate a node (or reuse an existing job),
 2. wait until its `device_ip` appears,
-3. `scp` the local repo to `ubuntu@<ip>:~/sandbed`,
+3. `rsync` the local repo to `ubuntu@<ip>:~/sandbed` (excluding `.venv`, `__pycache__`, `*.pyc`,
+   `.pytest_cache`, `.ruff_cache`),
 4. run `uv run sandbed <args>` on the remote node (testflinger flags stripped).
 
 ## Prerequisites
