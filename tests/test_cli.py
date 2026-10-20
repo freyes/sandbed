@@ -7,6 +7,8 @@ from sandbed.cli import cli
 
 @patch("sandbed.terraform.run")
 def test_cli_plan_manual(fake_run) -> None:
+    fake_run.return_value.stdout = ""
+    fake_run.return_value.returncode = 0
     result = CliRunner().invoke(cli, ["sunbeam", "manual", "plan"])
     assert result.exit_code == 0
 
