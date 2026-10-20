@@ -7,7 +7,7 @@ core:
   software:
     juju:
       bootstrap:
-        series: noble
+        series: {{ deploy_series }}
 deployment:
   name: "{{ deployment_name }}"
   provider: maas

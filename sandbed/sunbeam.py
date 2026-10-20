@@ -23,6 +23,7 @@ def deploy_sunbeam(ctx: Config) -> None:
             "deployment_name": ctx.maas_name,
             "maas_url": ctx.maas_url,
             "maas_token": ctx.maas_token,
+            "deploy_series": ctx.maas_deploy_series,
         },
     )
 
