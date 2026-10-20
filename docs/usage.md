@@ -23,7 +23,7 @@ re-runs skip completed phases.
 | `--mgmt-cidr` | `192.168.200.0/24` | CIDR of the `mgmt` LXD network |
 | `--vcpus` / `--memory` / `--disk` | `4` / `8192` / `100` | VM resources |
 | `--shared-dir` | `""` | host dir mounted into every VM at `/shared` |
-| `--ssh-key` | `$SUNBEAM_SSH_KEY` | public key injected via cloud-init |
+| `--ssh-key` | `$SUNBEAM_SSH_KEY` | public key injected via cloud-init. For maas it falls back to the first of `~/.ssh/id_ed25519.pub`, `id_ecdsa.pub`, `id_rsa.pub`, and `preflight` fails if there is none (the private half must be on the machine running sandbed, which ssh-es into `sunbeam-client-1`) |
 | `--ssh-host` | `""` | (sunbeam phase) target host override; maas defaults to `sunbeam-client-1` |
 | `--microceph-osd-img` | (snap common path) | file backing the loop OSD |
 | `--maas-name` | `sandbed` (maas) | Sunbeam deployment name; machines are tagged `openstack-<name>` |

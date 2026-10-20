@@ -75,6 +75,22 @@ class Config:
     )
 
 
+SSH_PUBLIC_KEY_FILES = ("id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub")
+
+
+def default_ssh_public_key() -> str:
+    """First public key under ~/.ssh, or "" when there is none."""
+    ssh_dir = os.path.expanduser("~/.ssh")
+    for name in SSH_PUBLIC_KEY_FILES:
+        path = os.path.join(ssh_dir, name)
+        if os.path.isfile(path):
+            with open(path) as fh:
+                key = fh.read().strip()
+            if key:
+                return key
+    return ""
+
+
 def load_config(provider: str, action: str, **overrides) -> Config:
     cfg = Config(provider=provider, action=action)
     if not cfg.ssh_key:
@@ -86,4 +102,7 @@ def load_config(provider: str, action: str, **overrides) -> Config:
             setattr(cfg, key, value)
     if provider == "maas" and not cfg.maas_name:
         cfg.maas_name = "sandbed"
+    # The maas flow ssh-es into the client VM, so it needs a key that cloud-init authorizes.
+    if provider == "maas" and not cfg.ssh_key:
+        cfg.ssh_key = default_ssh_public_key()
     return cfg

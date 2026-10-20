@@ -42,6 +42,12 @@ def check(ctx: Config) -> None:
     if run(["sudo", "microceph", "cluster", "list"], check=False).returncode != 0:
         raise PreflightError("microceph not reachable", "snap install microceph + bootstrap")
     if ctx.provider == "maas":
+        if not ctx.ssh_key:
+            raise PreflightError(
+                "no SSH public key for the Sunbeam client VM",
+                "pass --ssh-key (or set SUNBEAM_SSH_KEY) with a key whose private half is on "
+                "the machine running sandbed, or create one with `ssh-keygen -t ed25519`",
+            )
         _check_lxd_https(ctx)
     if ctx.shared_dir and not os.path.isdir(ctx.shared_dir):
         raise PreflightError(

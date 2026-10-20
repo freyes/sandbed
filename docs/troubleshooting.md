@@ -17,6 +17,7 @@
 | MAAS can't power VMs | LXD `core.https_address` is not `<generic gateway>:8443`, or the `sandbed-maas` certificate is not trusted (`lxc config trust list`). |
 | `maas-setup` waits on images | Image sync can take 10-30 min; progress is the streamed Terraform output. Raise `--maas-image-sync-timeout` on slow links, then re-run `up`. |
 | Machine stuck in PXE / Commissioning | DHCP on `generic` is served by `maas-1`: check `lxc exec maas-1 -- snap logs maas`, and that the VM has `security.secureboot=false`. |
+| `preflight` says no SSH public key (maas) | Pass `--ssh-key` or set `SUNBEAM_SSH_KEY`, or run `ssh-keygen -t ed25519` on the machine running sandbed. Under Testflinger the env var is not forwarded to the node: pass `--ssh-key` on the command line. A key added after the `terraform` phase ran needs `destroy` and a fresh `up`: the client VM's cloud-init has already run. |
 | `preflight` says `core.https_address` is already set | Unset it (`lxc config unset core.https_address`) or set it to the address shown. |
 | `cluster bootstrap` hangs | Sunbeam manifest not passed or `--ssh-host` wrong; re-run `sunbeam` phase after fixing. |
 

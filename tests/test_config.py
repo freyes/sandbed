@@ -55,3 +55,33 @@ def test_maas_name_override_wins() -> None:
 
 def test_manual_keeps_empty_maas_name() -> None:
     assert load_config("manual", "up").maas_name == ""
+
+
+def _home_with_keys(tmp_path, monkeypatch, **keys):
+    ssh = tmp_path / ".ssh"
+    ssh.mkdir()
+    for name, content in keys.items():
+        (ssh / name).write_text(content)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SUNBEAM_SSH_KEY", raising=False)
+
+
+def test_maas_ssh_key_defaults_to_the_users_public_key(tmp_path, monkeypatch) -> None:
+    keys = {"id_rsa.pub": "ssh-rsa RSA\n", "id_ed25519.pub": "ssh-ed25519 ED\n"}
+    _home_with_keys(tmp_path, monkeypatch, **keys)
+    assert load_config("maas", "up").ssh_key == "ssh-ed25519 ED"
+
+
+def test_maas_ssh_key_flag_wins_over_the_default(tmp_path, monkeypatch) -> None:
+    _home_with_keys(tmp_path, monkeypatch, **{"id_ed25519.pub": "ssh-ed25519 ED\n"})
+    assert load_config("maas", "up", ssh_key="ssh-ed25519 MINE").ssh_key == "ssh-ed25519 MINE"
+
+
+def test_maas_ssh_key_stays_empty_without_any_key(tmp_path, monkeypatch) -> None:
+    _home_with_keys(tmp_path, monkeypatch)
+    assert load_config("maas", "up").ssh_key == ""
+
+
+def test_manual_ssh_key_is_never_defaulted_from_disk(tmp_path, monkeypatch) -> None:
+    _home_with_keys(tmp_path, monkeypatch, **{"id_ed25519.pub": "ssh-ed25519 ED\n"})
+    assert load_config("manual", "up").ssh_key == ""

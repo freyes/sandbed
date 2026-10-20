@@ -24,7 +24,10 @@ resource "maas_configuration" "upstream_dns" {
   value = var.upstream_dns
 }
 
+# MAAS rejects an empty key, so skip this when none was given.
 resource "maas_ssh_keys" "admin" {
+  count = var.ssh_key == "" ? 0 : 1
+
   keys = [var.ssh_key]
 }
 
