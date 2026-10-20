@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 
 import click
 
-from . import terraform, testflinger
+from . import sshkey, terraform, testflinger
 from .config import Config, load_config
 from .destroy import destroy
 from .hooks import run_hook
@@ -18,6 +19,10 @@ from .sunbeam import deploy_sunbeam
 PHASES = ["preflight", "install-tools", "terraform", "maas-setup", "sunbeam"]
 # Phases that need the MAAS URL/token/client host, which only exist once `terraform` has run.
 MAAS_RESOLVED_PHASES = ("maas-setup", "sunbeam")
+
+
+def _inside_cwd(path: str) -> bool:
+    return os.path.commonpath([os.getcwd(), path]) == os.getcwd()
 
 
 def _timeout(_ctx: click.Context, _param: click.Parameter, value: str | None) -> str | None:
@@ -50,6 +55,7 @@ def cli() -> None:
 @click.option("--landscape-count", type=int)
 @click.option("--shared-dir")
 @click.option("--ssh-key", envvar="SUNBEAM_SSH_KEY")
+@click.option("--ssh-key-file", envvar="SANDBED_SSH_KEY_FILE")
 @click.option("--ssh-host")
 @click.option("--maas-name")
 @click.option("--maas-space")
@@ -77,6 +83,7 @@ def sunbeam(provider: str, action: str, **flags) -> None:
     """Deploy Canonical OpenStack (Sunbeam) on LXD virtual machines."""
     ctx = load_config(provider, action, **{k: v for k, v in flags.items() if v is not None})
     state = PhaseState(ctx.state_file)
+    sshkey.prepare(ctx)
 
     if ctx.use_testflinger:
         if not ctx.testflinger_queue:
@@ -87,6 +94,11 @@ def sunbeam(provider: str, action: str, **flags) -> None:
             )
         if not ctx.testflinger_job and not ctx.testflinger_key:
             raise click.UsageError("allocating a node requires at least one --testflinger-key")
+        if ctx.ssh_identity and not _inside_cwd(ctx.ssh_identity):
+            raise click.UsageError(
+                "--ssh-key-file must be inside the working directory with --use-testflinger "
+                "(the directory is synced to the node, and the private key goes with it)"
+            )
         sys.exit(testflinger.run_(ctx))
 
     if action == "plan":

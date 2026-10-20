@@ -25,5 +25,5 @@ CI (`.github/workflows/ci.yml`) runs all of the above. Keep them green.
 - `tests/test_manual_unchanged.py` pins the `manual` provider. Do not edit it to make a change pass.
 - `terraform/maas` outputs (`maas_url`, `maas_api_key`, `maas_admin_password`, `maas_instance`, `lxd_power_*`, `machines`, `client_mgmt_ip`) are read by `maas-config` and `sandbed/terraform.py`. Keep them in sync.
 - `.omo/` holds historical plans. Do not edit it.
-- Don't commit `tmp*.yaml` or `.sandbed.testflinger.job_id`.
+- Don't commit `tmp*.yaml`, `.sandbed.testflinger.job_id` or `.sandbed_ed25519*` (the deployment key).
 - Commit messages: conventional style (`feat(scope): ...`, `fix(scope): ...`).

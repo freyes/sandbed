@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -145,3 +145,48 @@ def test_cli_lxd_https_port_flag(tmp_path, monkeypatch) -> None:
         )
     assert result.exit_code == 0, result.output
     assert seen["port"] == 9443
+
+
+def test_cli_prepares_the_ssh_key_for_every_action(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prepare = MagicMock()
+    monkeypatch.setattr("sandbed.cli.sshkey", MagicMock(prepare=prepare))
+    with patch("sandbed.cli._dispatch"):
+        result = CliRunner().invoke(cli, ["sunbeam", "manual", "up", "--no-hooks"])
+    assert result.exit_code == 0, result.output
+    prepare.assert_called_once()
+
+
+@patch("sandbed.testflinger.run_", return_value=0)
+def test_cli_testflinger_rejects_a_key_outside_the_working_directory(fake_run, monkeypatch) -> None:
+    def outside(ctx):
+        ctx.ssh_key = "ssh-ed25519 AAAA"
+        ctx.ssh_identity = "/elsewhere/key"
+
+    monkeypatch.setattr("sandbed.cli.sshkey", MagicMock(prepare=outside))
+    result = CliRunner().invoke(
+        cli,
+        ["sunbeam", "--use-testflinger", "--testflinger-queue", "q", "--testflinger-key", "lp:u",
+         "manual", "plan"],
+    )
+    assert result.exit_code == 2
+    assert "inside the working directory" in result.output
+    fake_run.assert_not_called()
+
+
+@patch("sandbed.testflinger.run_", return_value=0)
+def test_cli_testflinger_accepts_a_key_inside_the_working_directory(fake_run, monkeypatch) -> None:
+    import os
+
+    def inside(ctx):
+        ctx.ssh_key = "ssh-ed25519 AAAA"
+        ctx.ssh_identity = os.path.join(os.getcwd(), ".sandbed_ed25519")
+
+    monkeypatch.setattr("sandbed.cli.sshkey", MagicMock(prepare=inside))
+    result = CliRunner().invoke(
+        cli,
+        ["sunbeam", "--use-testflinger", "--testflinger-queue", "q", "--testflinger-key", "lp:u",
+         "manual", "plan"],
+    )
+    assert result.exit_code == 0, result.output
+    fake_run.assert_called_once()

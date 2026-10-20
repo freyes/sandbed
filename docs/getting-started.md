@@ -25,7 +25,7 @@ repo, the `openstack` snap) during the `install-tools` phase — you don't need 
 ## Quickstart — manual provider
 
 ```bash
-sandbed sunbeam manual up --ssh-key "$(cat ~/.ssh/id_rsa.pub)"
+sandbed sunbeam manual up
 ```
 
 This provisions 3 hyperconverged VMs (`cloud-1/2/3`) and drives Sunbeam: bootstrap on `cloud-1`,
@@ -35,8 +35,7 @@ scale out `cloud-2/3`, then `configure`. On success it prints the dashboard URL 
 
 ```bash
 sandbed sunbeam maas up \
-  --maas-admin-password 'choose-one' \
-  --ssh-key "$(cat ~/.ssh/id_rsa.pub)"
+  --maas-admin-password 'choose-one'
 ```
 
 This deploys MAAS in an LXD VM (`maas` and `maas-test-db` snaps), configures it with Terraform,

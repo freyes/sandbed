@@ -165,7 +165,7 @@ there).
 | Area | Result |
 |------|--------|
 | Server | `default_osystem=ubuntu`, `default_distro_series=<--maas-deploy-series>`, `upstream_dns` |
-| SSH | `--ssh-key` added to MAAS |
+| SSH | the deployment public key added to MAAS |
 | Images | `ubuntu/<deploy series>` `amd64` selected; the commissioning series too if it differs. **Terraform blocks until every image is fully synced** (`--maas-image-sync-timeout`, default `60m`), then until the rack controller has them |
 | Network | the discovered `generic` fabric, VLAN and subnet are imported and given space `--maas-space`, gateway `.1`, DNS `.2`; DHCP on, served by `maas-1` |
 | Ranges | dynamic `.100-.200`; reserved `<name>-internal-api` and `<name>-public-api` |
@@ -274,6 +274,10 @@ and `on-fail` (a failing phase, in place of its `.post`). A non-zero exit aborts
 receive `SDB_PROVIDER`, `SDB_ACTION`, `SDB_PHASE`, `SDB_HOOK`, and configured flags as
 `SDB_CFG_<NAME>`; `on-fail` receives the failed phase's stdout+stderr on stdin. Disable with
 `--no-hooks`; override the directory with `--hooks-dir` (default `hooks/`).
+
+**SSH key:** unless `--ssh-key` is given, sandbed creates a dedicated password-less ed25519 key in the
+working directory (`.sandbed_ed25519`, only if absent), authorizes its public half on every node
+(cloud-init, MAAS, the Testflinger node) and ssh-es with `-i` to the client.
 
 **Testflinger:** with `--use-testflinger`, the invocation is delegated to remote execution instead
 of running locally — allocate a node (`testflinger-cli reserve`) or reuse a job, wait for its

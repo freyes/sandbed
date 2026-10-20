@@ -314,6 +314,21 @@ def scp_repo(ctx: Config, host: str) -> None:
     )
 
 
+def authorize_key(ctx: Config, host: str) -> None:
+    """Add the deployment public key to the node's authorized_keys (idempotent).
+
+    The private half reaches the node with the repo sync (it lives in the working directory).
+    """
+    if not ctx.ssh_key:
+        return
+    key = shlex.quote(ctx.ssh_key)
+    cmd = (
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && "
+        f"{{ grep -qxF {key} ~/.ssh/authorized_keys || echo {key} >> ~/.ssh/authorized_keys; }}"
+    )
+    run(["ssh", *SSH_OPTS, f"ubuntu@{host}", cmd])
+
+
 def prep_host(ctx: Config, host: str) -> int:
     cmd = (
         "cd ~/sandbed && "
@@ -363,5 +378,6 @@ def run_(ctx: Config) -> int:
     host = wait_for_device(ctx, job_id)
     console.print(f"device ready: [bold green]{host}[/bold green]")
     scp_repo(ctx, host)
+    authorize_key(ctx, host)
     prep_host(ctx, host)
     return run_remote(ctx, host)

@@ -434,3 +434,36 @@ def test_tf_run_exhausts_retries_and_reraises() -> None:
             with pytest.raises(RetryableConnectionError):
                 tf._tf_run(["testflinger-cli", "reserve"])
     assert mock_run.call_count == tf.TF_MAX_ATTEMPTS
+
+@patch("sandbed.testflinger.run")
+def test_authorize_key_appends_the_key_idempotently(fake_run) -> None:
+    from sandbed.testflinger import authorize_key
+
+    authorize_key(_cfg(ssh_key="ssh-ed25519 AAAA sandbed"), "1.2.3.4")
+    cmd = fake_run.call_args.args[0]
+    assert cmd[0] == "ssh" and cmd[-2] == "ubuntu@1.2.3.4"
+    script = cmd[-1]
+    assert "grep -qxF 'ssh-ed25519 AAAA sandbed' ~/.ssh/authorized_keys" in script
+    assert ">> ~/.ssh/authorized_keys" in script
+
+
+@patch("sandbed.testflinger.run")
+def test_authorize_key_without_a_key_does_nothing(fake_run) -> None:
+    from sandbed.testflinger import authorize_key
+
+    authorize_key(_cfg(ssh_key=""), "1.2.3.4")
+    fake_run.assert_not_called()
+
+
+def test_run_authorizes_the_key_after_the_sync_and_before_prepping(monkeypatch) -> None:
+    from sandbed import testflinger
+
+    calls: list[str] = []
+    monkeypatch.setattr(testflinger, "allocated_job_id", lambda ctx: "J")
+    monkeypatch.setattr(testflinger, "wait_for_device", lambda ctx, job: "1.2.3.4")
+    monkeypatch.setattr(testflinger, "scp_repo", lambda ctx, host: calls.append("sync"))
+    monkeypatch.setattr(testflinger, "authorize_key", lambda ctx, host: calls.append("authorize"))
+    monkeypatch.setattr(testflinger, "prep_host", lambda ctx, host: calls.append("prep") or 0)
+    monkeypatch.setattr(testflinger, "run_remote", lambda ctx, host: calls.append("run") or 0)
+    assert testflinger.run_(_cfg()) == 0
+    assert calls == ["sync", "authorize", "prep", "run"]

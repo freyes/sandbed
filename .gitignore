@@ -79,6 +79,8 @@ templates/cloud-init/*
 !templates/cloud-init/README.md
 
 # ─── Runtime state (local only) ────────────────────────────────
+.sandbed_ed25519
+.sandbed_ed25519.pub
 .sandbed.testflinger.job_id
 tmp*.yaml
 

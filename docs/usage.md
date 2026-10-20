@@ -23,7 +23,8 @@ re-runs skip completed phases.
 | `--mgmt-cidr` | `192.168.200.0/24` | CIDR of the `mgmt` LXD network |
 | `--vcpus` / `--memory` / `--disk` | `4` / `8192` / `100` | VM resources |
 | `--shared-dir` | `""` | host dir mounted into every VM at `/shared` |
-| `--ssh-key` | `$SUNBEAM_SSH_KEY` | public key injected via cloud-init. For maas it falls back to the first of `~/.ssh/id_ed25519.pub`, `id_ecdsa.pub`, `id_rsa.pub`, and `preflight` fails if there is none (the private half must be on the machine running sandbed, which ssh-es into `sunbeam-client-1`) |
+| `--ssh-key` | `$SUNBEAM_SSH_KEY` | use this public key instead of the dedicated key (then sandbed ssh-es with your own default identity) |
+| `--ssh-key-file` | `.sandbed_ed25519` | dedicated private key (`$SANDBED_SSH_KEY_FILE`); see [SSH key](#ssh-key) |
 | `--ssh-host` | `""` | (sunbeam phase) target host override; maas defaults to `sunbeam-client-1` |
 | `--microceph-osd-img` | (snap common path) | file backing the loop OSD |
 | `--maas-name` | `sandbed` (maas) | Sunbeam deployment name; machines are tagged `openstack-<name>` |
@@ -43,3 +44,18 @@ Run `sandbed sunbeam --help` for the full list.
 ## Environment variables
 
 - `SUNBEAM_SSH_KEY` — default SSH public key when `--ssh-key` is omitted.
+- `SANDBED_SSH_KEY_FILE` — default for `--ssh-key-file`.
+
+## SSH key
+
+Unless `--ssh-key` is given, sandbed uses a dedicated key in the working directory:
+`.sandbed_ed25519` (private) and `.sandbed_ed25519.pub`. It is created **only when it does not
+exist**, with `ssh-keygen -t ed25519 -N ""` (password-less), and never overwritten.
+
+- The public key is authorized on every node: `maas-1`, `sunbeam-client-1` and the manual VMs through
+  cloud-init, the MAAS-deployed nodes through MAAS, and the Testflinger node's `authorized_keys`.
+- sandbed itself ssh-es to the client with `-i .sandbed_ed25519 -o IdentitiesOnly=yes`.
+- With `--use-testflinger` the working directory is synced to the node, so the private key travels
+  with it (the node reuses it instead of creating another). The key file must therefore be inside
+  the working directory. Treat the node as holding a deployment secret: release it when done.
+- The key files are git-ignored. Delete them to force a new key on the next run.

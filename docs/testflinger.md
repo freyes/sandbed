@@ -9,6 +9,10 @@ queue, instead of locally:
    `.pytest_cache`, `.ruff_cache`, `.terraform`),
 4. run `uv run sandbed <args>` on the remote node (testflinger flags stripped).
 
+The dedicated SSH key (`.sandbed_ed25519`, see [usage](usage.md#ssh-key)) lives in the working
+directory, so step 3 copies its private half to the node, and the public half is appended to the
+node's `~/.ssh/authorized_keys` (idempotent) between the sync and the host preparation.
+
 ## Prerequisites
 
 - `testflinger-cli` must be in `$PATH` (snap `testflinger-cli`).

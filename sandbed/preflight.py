@@ -46,7 +46,7 @@ def check(ctx: Config) -> None:
             raise PreflightError(
                 "no SSH public key for the Sunbeam client VM",
                 "pass --ssh-key (or set SUNBEAM_SSH_KEY) with a key whose private half is on "
-                "the machine running sandbed, or create one with `ssh-keygen -t ed25519`",
+                "the machine running sandbed",
             )
         _check_lxd_https(ctx)
     if ctx.shared_dir and not os.path.isdir(ctx.shared_dir):
