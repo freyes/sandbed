@@ -37,6 +37,10 @@ POLL_INTERVAL = 15
 
 TF_MAX_ATTEMPTS = 5
 
+# A node can be reachable before its authorized_keys is populated (Permission denied).
+SSH_WAIT_TIMEOUT = 300
+SSH_WAIT_INTERVAL = 15
+
 RSYNC_EXCLUDES = [".venv", "__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache", ".terraform"]
 
 JOB_NOT_FOUND_MSG = "No data found for that job id."
@@ -294,6 +298,35 @@ def wait_for_device(ctx: Config, job_id: str) -> str:
     raise TimeoutError(f"device for {job_id} not ready within {ctx.testflinger_timeout}")
 
 
+def wait_for_ssh(
+    host: str, timeout: int = SSH_WAIT_TIMEOUT, interval: int = SSH_WAIT_INTERVAL
+) -> None:
+    """Retry `ssh` to the node every `interval` seconds, for up to `timeout` seconds."""
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while True:
+        attempt += 1
+        result = run(
+            ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+             f"ubuntu@{host}", "true"],
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+        lines = (result.stderr or "").strip().splitlines()
+        reason = lines[-1] if lines else f"ssh exited {result.returncode}"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"ssh to ubuntu@{host} not accepted within {timeout}s: {reason}"
+            )
+        console.print(
+            f"[yellow]ssh to {host} not ready (attempt {attempt}: {reason}); "
+            f"retrying in {min(interval, remaining):.0f}s[/yellow]"
+        )
+        time.sleep(min(interval, remaining))
+
+
 def scp_repo(ctx: Config, host: str) -> None:
     # .venv is excluded from the sync, so one left over from an earlier sync (when it was still
     # copied) is never refreshed and can be broken; let `uv run` rebuild it on the remote.
@@ -377,6 +410,7 @@ def run_(ctx: Config) -> int:
     console.print(f"testflinger job: [bold]{job_id}[/bold]")
     host = wait_for_device(ctx, job_id)
     console.print(f"device ready: [bold green]{host}[/bold green]")
+    wait_for_ssh(host)
     scp_repo(ctx, host)
     authorize_key(ctx, host)
     prep_host(ctx, host)

@@ -455,15 +455,78 @@ def test_authorize_key_without_a_key_does_nothing(fake_run) -> None:
     fake_run.assert_not_called()
 
 
-def test_run_authorizes_the_key_after_the_sync_and_before_prepping(monkeypatch) -> None:
+class _Clock:
+    """Fake time for wait_for_ssh: sleeping advances monotonic()."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _ssh_denied() -> _Out:
+    return _Out("", returncode=255, stderr="ubuntu@1.2.3.4: Permission denied (publickey).\n")
+
+
+def test_wait_for_ssh_returns_immediately_when_ssh_works(monkeypatch) -> None:
+    from sandbed import testflinger as tf
+
+    clock = _Clock()
+    monkeypatch.setattr(tf.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(tf.time, "sleep", clock.sleep)
+    with patch.object(tf, "run", return_value=_Out()) as fake_run:
+        tf.wait_for_ssh("1.2.3.4")
+    cmd = fake_run.call_args.args[0]
+    assert cmd[0] == "ssh" and cmd[-2:] == ["ubuntu@1.2.3.4", "true"]
+    assert "BatchMode=yes" in cmd and "ConnectTimeout=10" in cmd
+    assert fake_run.call_args.kwargs == {"check": False}
+    assert clock.sleeps == []
+
+
+def test_wait_for_ssh_retries_every_15s_until_the_key_is_accepted(monkeypatch, capsys) -> None:
+    from sandbed import testflinger as tf
+
+    clock = _Clock()
+    monkeypatch.setattr(tf.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(tf.time, "sleep", clock.sleep)
+    with patch.object(tf, "run", side_effect=[_ssh_denied(), _ssh_denied(), _Out()]) as fake_run:
+        tf.wait_for_ssh("1.2.3.4")
+    assert fake_run.call_count == 3
+    assert clock.sleeps == [15, 15]
+
+
+def test_wait_for_ssh_gives_up_after_5_minutes(monkeypatch) -> None:
+    import pytest
+
+    from sandbed import testflinger as tf
+
+    clock = _Clock()
+    monkeypatch.setattr(tf.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(tf.time, "sleep", clock.sleep)
+    with patch.object(tf, "run", return_value=_ssh_denied()) as fake_run:
+        with pytest.raises(TimeoutError, match="Permission denied"):
+            tf.wait_for_ssh("1.2.3.4")
+    assert clock.now == 300
+    assert fake_run.call_count == 21  # t=0, 15, ..., 300
+    assert set(clock.sleeps) == {15}
+
+
+def test_run_waits_for_ssh_then_syncs_authorizes_preps_and_runs(monkeypatch) -> None:
     from sandbed import testflinger
 
     calls: list[str] = []
     monkeypatch.setattr(testflinger, "allocated_job_id", lambda ctx: "J")
     monkeypatch.setattr(testflinger, "wait_for_device", lambda ctx, job: "1.2.3.4")
+    monkeypatch.setattr(testflinger, "wait_for_ssh", lambda host: calls.append("wait"))
     monkeypatch.setattr(testflinger, "scp_repo", lambda ctx, host: calls.append("sync"))
     monkeypatch.setattr(testflinger, "authorize_key", lambda ctx, host: calls.append("authorize"))
     monkeypatch.setattr(testflinger, "prep_host", lambda ctx, host: calls.append("prep") or 0)
     monkeypatch.setattr(testflinger, "run_remote", lambda ctx, host: calls.append("run") or 0)
     assert testflinger.run_(_cfg()) == 0
-    assert calls == ["sync", "authorize", "prep", "run"]
+    assert calls == ["wait", "sync", "authorize", "prep", "run"]
