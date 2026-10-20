@@ -23,7 +23,8 @@
 
 ## Environment notes (read first)
 
-- In this container `uv` is not installed and `tenacity` is missing from the system Python. Run tests with:
+- Update: `uv` and `terraform` are at `/snap/bin` (`export PATH=$PATH:/snap/bin`), so `uv run pytest`, `uv run ruff check .` and `terraform` work directly; the workarounds in this note are only for containers without them.
+- In this container `uv` was not on the PATH and `tenacity` is missing from the system Python. Run tests with:
   `PYTHONPATH=/tmp/opencode/deps python3 -m pytest tests -q -p no:cacheprovider`
   (create the deps dir once with `pip install --target /tmp/opencode/deps tenacity`). On a normal checkout use `uv run pytest` and `uv run ruff check .`. `ruff` could not be installed here; check line length with `awk 'length>100{print FILENAME":"FNR}' sandbed/*.py tests/*.py` and import order by eye (isort style: stdlib, third party, first party).
 - `terraform` is not installed here either. A binary can be fetched with:
