@@ -111,6 +111,17 @@ def test_scp_repo_excludes_local_artifacts(fake_run) -> None:
     assert cmd[-2:] == [".", "ubuntu@1.2.3.4:~/sandbed"]
 
 
+@patch("sandbed.testflinger.run")
+def test_scp_repo_removes_stale_remote_venv_first(fake_run) -> None:
+    from sandbed.testflinger import scp_repo
+
+    scp_repo(_cfg(), "1.2.3.4")
+    first, last = fake_run.call_args_list[0].args[0], fake_run.call_args_list[-1].args[0]
+    assert first[0] == "ssh"
+    assert first[-2:] == ["ubuntu@1.2.3.4", "rm -rf ~/sandbed/.venv"]
+    assert last[0] == "rsync"
+
+
 def test_write_and_read_job_id(tmp_path, monkeypatch) -> None:
     from sandbed.testflinger import _read_job_id, _write_job_id
 

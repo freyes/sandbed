@@ -295,6 +295,9 @@ def wait_for_device(ctx: Config, job_id: str) -> str:
 
 
 def scp_repo(ctx: Config, host: str) -> None:
+    # .venv is excluded from the sync, so one left over from an earlier sync (when it was still
+    # copied) is never refreshed and can be broken; let `uv run` rebuild it on the remote.
+    run(["ssh", *SSH_OPTS, f"ubuntu@{host}", "rm -rf ~/sandbed/.venv"])
     rsync_ssh = ["ssh", *SSH_OPTS]
     excludes = [arg for pattern in RSYNC_EXCLUDES for arg in ("--exclude", pattern)]
     run(
