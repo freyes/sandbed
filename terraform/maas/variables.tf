@@ -21,11 +21,21 @@ variable "sdb_size" {
 variable "obs_count" {
   type    = number
   default = 3
+
+  validation {
+    condition     = var.obs_count >= 0 && var.obs_count <= 16
+    error_message = "obs_count must be between 0 and 16."
+  }
 }
 
 variable "landscape_count" {
   type    = number
   default = 3
+
+  validation {
+    condition     = var.landscape_count >= 0 && var.landscape_count <= 16
+    error_message = "landscape_count must be between 0 and 16."
+  }
 }
 
 variable "mgmt_network_name" {
@@ -82,4 +92,39 @@ variable "generic_parent_bridge" {
 variable "cloud_init_templates_dir" {
   type    = string
   default = "templates/cloud-init"
+}
+variable "maas_vcpus" {
+  type    = number
+  default = 4
+}
+
+variable "maas_memory" {
+  type    = number
+  default = 8192
+}
+
+variable "maas_disk" {
+  type    = number
+  default = 50
+}
+
+variable "maas_channel" {
+  type    = string
+  default = "3.6/stable"
+}
+
+variable "maas_admin_password" {
+  type      = string
+  default   = "changeme"
+  sensitive = true
+}
+
+variable "upstream_dns" {
+  type    = string
+  default = "1.1.1.1"
+}
+
+variable "lxd_https_port" {
+  type    = number
+  default = 8443
 }
