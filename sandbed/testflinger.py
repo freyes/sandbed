@@ -37,7 +37,7 @@ POLL_INTERVAL = 15
 
 TF_MAX_ATTEMPTS = 5
 
-RSYNC_EXCLUDES = [".venv", "__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache"]
+RSYNC_EXCLUDES = [".venv", "__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache", ".terraform"]
 
 JOB_NOT_FOUND_MSG = "No data found for that job id."
 

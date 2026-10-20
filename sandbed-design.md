@@ -234,7 +234,7 @@ receive `SDB_PROVIDER`, `SDB_ACTION`, `SDB_PHASE`, `SDB_HOOK`, and configured fl
 
 **Testflinger:** with `--use-testflinger`, the invocation is delegated to remote execution instead
 of running locally — allocate a node (`testflinger-cli reserve`) or reuse a job, wait for its
-`device_ip`, `rsync` the repo (minus `.venv`, `__pycache__`, `*.pyc`, `.pytest_cache`, `.ruff_cache`) to `ubuntu@<ip>:~/sandbed`, then run
+`device_ip`, `rsync` the repo (minus `.venv`, `__pycache__`, `*.pyc`, `.pytest_cache`, `.ruff_cache`, `.terraform`) to `ubuntu@<ip>:~/sandbed`, then run
 `uv run sandbed <args>` (testflinger flags stripped). The allocated job id is persisted
 to `$CWD/.sandbed.testflinger.job_id`; a later implicit reserve reuses it if it is live
 (`waiting`/`provision`/`test`/`reserve`) and on the same queue, otherwise prints a warning

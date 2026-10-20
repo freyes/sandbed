@@ -100,7 +100,14 @@ def test_scp_repo_excludes_local_artifacts(fake_run) -> None:
     scp_repo(_cfg(), "1.2.3.4")
     cmd = fake_run.call_args.args[0]
     excludes = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--exclude"]
-    assert excludes == [".venv", "__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache"]
+    assert excludes == [
+        ".venv",
+        "__pycache__",
+        "*.pyc",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".terraform",
+    ]
     assert cmd[-2:] == [".", "ubuntu@1.2.3.4:~/sandbed"]
 
 
