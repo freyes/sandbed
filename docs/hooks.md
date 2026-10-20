@@ -24,6 +24,10 @@ Every hook receives:
 - `SDB_PHASE` (current phase; for `on-fail`, the failing phase)
 - `SDB_HOOK` (the hook's filename)
 - `SDB_CFG_<NAME>` for each configured flag (e.g. `SDB_CFG_MGMT_CIDR`)
+
+For the maas provider, `SDB_CFG_MAAS_URL`, `SDB_CFG_MAAS_TOKEN`, `SDB_CFG_MAAS_ADMIN_PASSWORD` and
+`SDB_CFG_SSH_HOST` are filled from Terraform outputs just before the maas-setup and sunbeam phases;
+hooks for earlier phases see them empty (or default).
 - the inherited host environment
 
 `on-fail` also receives the failed phase's combined stdout+stderr on **stdin**.

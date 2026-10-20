@@ -27,8 +27,10 @@ Terraform at plan time (`fileexists()` + nested ternary). Templates use Terrafor
 
 - When you override `user-data`, you own the entire cloud-init user-data — including the `/shared`
   mount `runcmd` (see [shared directory](shared-directory.md)).
-- MAAS `cloud-*` nodes are empty PXE machines (no cloud-init), so a `<node>` override named
-  `cloud-1` in the maas module is ignored.
+- In the maas module only `maas-1` and `sunbeam-client-1` consume cloud-init (every other node is an
+  empty PXE VM installed by MAAS), so overrides named after other nodes are ignored. Their
+  network-config is static and always has an embedded fallback, and `default.network-config.yaml.tpl`
+  is not applied to them; only `<node>.network-config.yaml.tpl` overrides it.
 - `sandbed` resolves the directory to an absolute path before passing it as a Terraform variable,
   so it works regardless of which module directory Terraform runs in.
 

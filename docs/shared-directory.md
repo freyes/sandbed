@@ -1,7 +1,8 @@
 # Shared directory
 
 `--shared-dir=<DIR>` mounts a host directory at `/shared` in **every** VM, using an LXD `disk`
-device (a directory source is served to the VM over virtiofs/9p).
+device (a directory source is served to the VM over virtiofs/9p). In the maas provider the
+directory is mounted on `maas-1` and `sunbeam-client-1` only; the other nodes are installed by MAAS.
 
 ## Requirements
 

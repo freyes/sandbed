@@ -18,7 +18,7 @@ environment variables → CLI flags (a `config.yaml` reader is provided for cust
 | `--vcpus` | `4` |
 | `--memory` | `8192` (MiB) |
 | `--disk` | `100` (GiB, root) |
-| `--obs-count` / `--landscape-count` | `3` (maas only; settable 0/1) |
+| `--obs-count` / `--landscape-count` | `3` each (maas only; 0 to 16) |
 
 ## Storage — host microceph
 
@@ -40,8 +40,15 @@ at `ceph.cluster_name=ceph`, `ceph.user.name=admin`, and the `rbd` pool.
 
 | Flag | Default |
 |------|---------|
-| `--maas-name` / `--maas-url` / `--maas-token` | — (required for maas) |
+| `--maas-name` | `sandbed` |
 | `--maas-space` | `myspace` |
+| `--maas-admin-password` | `changeme` |
+| `--maas-deploy-series` | `noble` |
+| `--maas-channel` | `3.6/stable` |
+| `--maas-vcpus` / `--maas-memory` / `--maas-disk` | `4` / `8192` / `50` |
+| `--maas-image-sync-timeout` | `60m` |
+| `--maas-upstream-dns` | `1.1.1.1` |
+| `--maas-parallelism` | `10` |
 | `--lxd-https-port` | `8443` |
 
 ## Sunbeam

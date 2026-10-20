@@ -5,7 +5,7 @@
 - Ubuntu **26.04** (no other release is supported).
 - KVM enabled (`/dev/kvm` present).
 - `snapd` running (LXD and microceph are installed as snaps).
-- RAM/CPU/disk to host **3** VMs (manual) or **10–16** VMs (maas), each default 4 vCPU / 8 GB RAM /
+- RAM/CPU/disk to host **3** VMs (manual) or up to **17** VMs (maas: MAAS, the Sunbeam client and 15 enlisted nodes; fewer with `--obs-count`/`--landscape-count`), each default 4 vCPU / 8 GB RAM /
   100 GB disk, plus a single-node Ceph OSD.
 
 ## Install
@@ -35,15 +35,13 @@ scale out `cloud-2/3`, then `configure`. On success it prints the dashboard URL 
 
 ```bash
 sandbed sunbeam maas up \
-  --maas-name mymaas --maas-url http://maas:5240/MAAS --maas-token "$MAAS_API_TOKEN" \
+  --maas-admin-password 'choose-one' \
   --ssh-key "$(cat ~/.ssh/id_rsa.pub)"
 ```
 
-MAAS infrastructure (region/rack controllers) is assumed running externally. The harness configures
-the LXD power driver, enlists/commissions the VMs, applies tags/ranges/spaces, then deploys Sunbeam
-from `sunbeam-client-1`.
-
-> **Note:** `--maas-url` and `--maas-token` are required for the maas provider.
+This deploys MAAS in an LXD VM (`maas` and `maas-test-db` snaps), configures it with Terraform,
+waits for the boot images to sync and for every node to commission, then deploys Sunbeam from
+`sunbeam-client-1`. A cold run can take an hour or more. See [MAAS provider](maas-provider.md).
 
 ## Quickstart — Testflinger (remote execution)
 

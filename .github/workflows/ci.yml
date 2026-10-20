@@ -30,3 +30,6 @@ jobs:
       - run: terraform -chdir=terraform/maas init -backend=false
       - run: terraform -chdir=terraform/maas validate
       - run: terraform -chdir=terraform/maas fmt -check
+      - run: terraform -chdir=terraform/maas-config init -backend=false
+      - run: terraform -chdir=terraform/maas-config validate
+      - run: terraform -chdir=terraform/maas-config fmt -check

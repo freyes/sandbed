@@ -34,28 +34,29 @@ provides the LXD storage pool and the block devices passed to the VMs.
   OSD**, backs the LXD `ceph` storage pool (VM root disks) and exports RBD block devices into each
   VM as `/dev/sdb`.
 - **Documentation:** a set of Markdown files under `docs/` with an index.
-- **MAAS setup fully automated** by the script (commissioning, tags, ranges, spaces, LXD power
-  driver).
+- **MAAS deployed and configured by the harness:** `maas-1` (maas + maas-test-db snaps) built by
+  Terraform; MAAS configured by Terraform (Canonical `maas` provider): images, network/DHCP, machines,
+  tags, LXD power driver.
 
 ## 3. Decisions log
 
 | Decision | Choice |
 |---|---|
-| Scope boundary | Provision VMs (Terraform/LXD) **and** drive Sunbeam (script); MAAS infrastructure assumed running externally |
+| Scope boundary | Provision VMs (Terraform/LXD), deploy MAAS itself in an LXD VM, configure it with the Canonical `maas` Terraform provider, and drive Sunbeam (script) |
 | Hypervisor | **LXD** (snap), VMs are QEMU/KVM-backed (`type = "virtual-machine"`), not containers |
 | Terraform provider | `terraform-lxd/lxd` (Canonical), local unix socket remote |
 | Host storage | **Single-node microceph** (snap), file-backed loop OSD; provides LXD `ceph` pool + RBD `/dev/sdb` to VMs |
 | Guest storage | Sunbeam deploys its **own** microceph inside the VMs, using `/dev/sdb` as its OSD (nested Ceph) |
-| Module structure | Shared `network/` module + `manual/` and `maas/` modules; `sandbed sunbeam manual\|maas` selects |
-| MAAS VM set | Core HA (10 VMs) + `observability`/`landscape` as variable counts (default 3, settable 0/1) |
-| MAAS control | MAAS `lxd` power driver over HTTPS (`power_type=lxd`); PXE enlist/commission off `generic` |
+| Module structure | Shared `network/` + `manual/`, `maas/` (lxd) and `maas-config/` (maas provider) modules; `sandbed sunbeam manual\|maas` selects |
+| MAAS VM set | `maas-1` + `sunbeam-client-1` (cloud-init) + 9 core nodes + observability/landscape variable counts (default 3, 0 to 16); all but the client are empty PXE VMs enlisted in MAAS |
+| MAAS control | MAAS `lxd` power driver over HTTPS to `<generic gateway>:8443` with a Terraform-generated client certificate trusted by LXD; PXE enlist/commission off `generic` served by maas-1 |
 | Host contract | Assume LXD + microceph present (or installed by script); script installs terraform + `openstack` snap |
 | Base image | Ubuntu 26.04 cloud image, no fallback |
 | Shared dir | `--shared-dir=<DIR>` → LXD `disk` device (virtiofs/9p) mounted at `/shared` |
 | Hooks | User executables in `hooks/`; filename = timing (`.pre`/`.post` per phase, `pre-run`/`post-run`, `on-fail`) |
 | Cloud-init templates | Per-VM resolution: `<node>.user-data.yaml.tpl` → `default.user-data.yaml.tpl` → embedded; `<node>.network-config.yaml.tpl` → `default.network-config.yaml.tpl` → (LXD default) |
 | Testflinger | `--use-testflinger` allocates a remote node via `testflinger-cli reserve`, scp's the repo, and re-runs remotely |
-| MAAS-side setup | Script fully automates it via MAAS API/CLI |
+| MAAS-side setup | Terraform `maas-config` root; images block until synced; admin password is a variable (default `changeme`) and an output |
 
 ## 4. Repository layout
 
@@ -70,8 +71,10 @@ sandbed/
       main.tf  variables.tf  outputs.tf
     manual/                  # 3 hyperconverged VMs (+ cloud-init)
       main.tf  variables.tf  outputs.tf  cloud-init/
-    maas/                    # core HA VMs + optional obs/landscape (+ cloud-init)
-      main.tf  variables.tf  outputs.tf  cloud-init/
+    maas/                    # maas-1, client, PXE nodes, LXD HTTPS/trust (+ cloud-init, files/)
+      main.tf  variables.tf  outputs.tf  cloud-init/  files/
+    maas-config/             # MAAS configuration via the canonical/maas provider
+      providers.tf  variables.tf  main.tf  network.tf  machines.tf
   manifests/                 # Jinja2 sunbeam deployment-manifest templates
     manual.yaml.j2  maas.yaml.j2
   hooks/                    # user hooks (filenames = timing); README.md tracked, hooks/* gitignored
@@ -106,8 +109,7 @@ sandbed/
   - Outputs: `mgmt` network id, ceph pool id, base image fingerprint.
 - Each provider module creates its own networks: `manual/` creates **`external`** (default
   `172.16.2.0/24`, used by `sunbeam configure` for floating IPs); `maas/` creates **`generic`**
-  (default `172.16.1.0/24`, parent uplink `bridge.external_interfaces` so external MAAS can
-  PXE-enlist) **and** `external`.
+  (default `172.16.1.0/24`, LXD DHCP off: MAAS on `maas-1` serves DHCP/PXE) **and** `external`.
 
 ## 6. Terraform — `manual/` module
 
@@ -119,20 +121,65 @@ sandbed/
   `NOPASSWD` sudo/`/shared` mount) with `user.user-data` + optional `user.network-config`.
 - Outputs: IPs, SSH target, external-net info.
 
-## 7. Terraform — `maas/` module
+## 7. Terraform — `maas/` and `maas-config/` modules
 
-- LXD networks: `generic` `172.16.1.0/24` (bridges to external MAAS PXE space), `external`
-  `172.16.2.0/24`, plus `mgmt`.
-- Core HA VMs (10): `cloud-1/2/3` (2 NICs generic+external, AZ1/2/3),
-  `sunbeam-controller-1/2/3`, `juju-controller-1/2/3`, `sunbeam-client-1`.
-- Optional via variable counts (default 3, settable 0/1): `observability-1/2/3`, `landscape-1/2/3`.
-- **Every VM** (core HA **and** optional obs/landscape) receives a secondary **`/dev/sdb`** RBD block
-  volume from the host-microceph `ceph` pool, in addition to its root disk. `/dev/sdb` backs
-  Sunbeam's storage role on the nodes that carry it and is left unused on the rest.
-- cloud-init sets hostnames/SSH/`/shared` (rendered from per-VM templates, see §8a); `cloud-*` left
-  minimal so MAAS redeploys them (PXE off `generic`, powered via MAAS `lxd` power driver).
-- Outputs: MACs/IPs, AZs, NIC mapping, LXD instance names (consumed by sandbed + MAAS
-  automation).
+`maas/` (lxd provider) builds the networks and VMs; `maas-config/` (Canonical `maas` provider)
+configures MAAS from `maas/`'s local state. See `docs/maas-provider.md` for the user view.
+
+### Topology
+
+```
+generic 172.16.1.0/24   LXD DHCP off; MAAS serves DHCP, PXE and DNS
+  .1  host bridge / gateway          .2  maas-1 (static)        .3  sunbeam-client-1 (static)
+  .20-.39 reserved <name>-internal-api   .40-.59 reserved <name>-public-api
+  .100-.200 dynamic range (enlist / commission)
+mgmt     192.168.200.0/24   sunbeam-client-1 eth0 (host access)
+external 172.16.2.0/24      cloud-* eth1 (floating IPs, `neutron:physnet1`)
+```
+
+| VM | NICs | Provisioned by |
+|----|------|----------------|
+| `maas-1` | `generic` (static `.2`) | cloud-init, then `maas-bootstrap.sh`: `maas` snap (region + rack) and `maas-test-db` snap |
+| `sunbeam-client-1` | `mgmt` + `generic` (static `.3`) | cloud-init; drives Sunbeam |
+| `cloud-1/2/3` | `generic` + `external` | empty PXE VM, stopped until MAAS powers it on |
+| `sunbeam-controller-1/2/3`, `juju-controller-1/2/3` | `generic` | empty PXE VM |
+| `observability-N`, `landscape-N` (default 3 each, 0 to 16) | `generic` | empty PXE VM |
+
+Every PXE VM has a secondary `/dev/sdb` RBD volume (only the cloud nodes use it). Their MACs are
+fixed (`00:16:3e:5a:01:<n>` on `generic`, `00:16:3e:5a:02:<n>` on `external`) so MAAS can be told
+about them before they ever run. `maas-1` and the client have no `/dev/sdb`. `--shared-dir` is
+mounted on `maas-1` and the client only (MAAS installs the other nodes, so cloud-init never runs
+there).
+
+### Phases
+
+1. **terraform** applies `network`, then `maas` (`terraform/maas/`): networks, `maas-1` (bootstrapped
+   through `lxd_instance` `execs`), the client, the PXE VMs, `core.https_address` on the `generic`
+   gateway and a generated client certificate that LXD trusts for MAAS power control.
+2. **maas-setup** applies `terraform/maas-config/` with the Canonical `maas` provider. It reads
+   `maas`'s local state, so no secret goes through the command line.
+3. **sunbeam** runs on `sunbeam-client-1`.
+
+### What `maas-setup` configures
+
+| Area | Result |
+|------|--------|
+| Server | `default_osystem=ubuntu`, `default_distro_series=<--maas-deploy-series>`, `upstream_dns` |
+| SSH | `--ssh-key` added to MAAS |
+| Images | `ubuntu/<deploy series>` `amd64` selected; the commissioning series too if it differs. **Terraform blocks until every image is fully synced** (`--maas-image-sync-timeout`, default `60m`), then until the rack controller has them |
+| Network | the discovered `generic` fabric, VLAN and subnet are imported and given space `--maas-space`, gateway `.1`, DNS `.2`; DHCP on, served by `maas-1` |
+| Ranges | dynamic `.100-.200`; reserved `<name>-internal-api` and `<name>-public-api` |
+| Machines | each PXE VM is added with the `lxd` power driver, commissioned and waited to `Ready` |
+| Tags | see below; `ceph` storage tag on `/dev/sdb` of the cloud nodes; `neutron:physnet1` network tag, unconfigured, on their `external` NIC |
+
+| Role | Machine tags |
+|------|--------------|
+| cloud | `openstack-<name>`, `control`, `compute`, `storage` |
+| sunbeam-controller | `openstack-<name>`, `sunbeam` |
+| juju-controller | `openstack-<name>`, `juju-controller` |
+| observability, landscape | their own name only (no Sunbeam role) |
+
+`<name>` is `--maas-name` (default `sandbed`).
 
 ## 8. Shared directory (`--shared-dir=<DIR>`)
 
@@ -186,8 +233,9 @@ time. Templates use Terraform template syntax. Template variables: `hostname`, `
 Implemented via `fileexists()` + nested ternary; `sandbed` resolves the dir to an absolute path
 (`--cloud-init-templates-dir`, default `templates/cloud-init`). When a user overrides `user-data`,
 the `/shared` mount `runcmd` is no longer auto-injected — the user template owns it (see
-`docs/cloud-init-templating.md`). MAAS `cloud-*` nodes are empty PXE machines and consume no
-cloud-init, so their `<node>` overrides are inert.
+`docs/cloud-init-templating.md`). In the maas module only `maas-1` and `sunbeam-client-1` consume
+cloud-init (every other node is an empty PXE VM), so other `<node>` overrides are inert; their
+network-config is static, so `default.network-config.yaml.tpl` is not applied to them.
 
 ## 9. Python entry point `sandbed`
 
@@ -201,16 +249,11 @@ CLI: `sandbed sunbeam manual|maas {up|plan|destroy|sunbeam} [flags]`. Gated, res
    functional** (`microceph.ceph -s` succeeds, ≥1 OSD reports `up` via `microceph.ceph osd stat`,
    and the RBD pool is listed by `microceph.rados lspools`) — this must pass **before** phase 3
    creates the `ceph` LXD storage pool; add HashiCorp apt repo + `apt install terraform`;
-   `snap install openstack`; install MAAS CLI / `python-libmaas` (MAAS path). Skip if already
-   present.
+   `snap install openstack`. Skip if already present.
 3. **terraform** — `init/plan/apply` for the selected module, passing all variables (`shared_dir`,
    `mgmt_cidr`, VM resources, image, obs/landscape counts, ceph pool params).
-4. **maas setup (MAAS path only)** — via MAAS API/CLI (`maas_url`, `maas_token`): configure LXD
-   HTTPS (`core.https_address`) + trust token; set machine power `power_type=lxd` (`power_address`,
-   project, instance name); enlist + commission the VMs (PXE off `generic`); create reserved IP
-   ranges (`<name>-internal-api`, `<name>-public-api`); assign machine tags (`openstack-<name>`,
-   `control`/`compute`/`storage`, `sunbeam`, `juju-controller`); set network tag `neutron:physnet1`
-   + `Unconfigured` subnet on the external NIC; set `ceph` storage tag on `/dev/sdb`.
+4. **maas setup (MAAS path only)** — `terraform apply` of `maas-config/` (see §7); blocks until
+   images are synced and machines are `Ready`.
 5. **sunbeam** —
    - *manual*: SSH `cloud-1` → `snap install openstack` → `prepare-node-script --bootstrap | bash`
      → `cluster bootstrap --role control,compute,storage` (manifest-driven, non-interactive)
@@ -253,10 +296,10 @@ fresh, overwriting the file.
   (RBD pool name)
 - manual: `vm_count = 3`, `vcpus = 4`, `memory = 8192`, `disk = 100`,
   `external_cidr = 172.16.2.0/24`
-- maas: `obs_count = 3`, `landscape_count = 3`, `generic_cidr = 172.16.1.0/24`,
-  `external_cidr = 172.16.2.0/24`, `maas_name`, `maas_url`, `maas_token` (required),
-  `maas_space = myspace`, `internal_api_range`, `public_api_range`, `floating_ip_range`,
-  `lxd_https_port = 8443`
+- maas: `obs_count = 3`, `landscape_count = 3`, `generic_cidr`, `external_cidr`, `maas_name = sandbed`,
+  `maas_space = myspace`, `maas_admin_password = changeme`, `maas_channel = 3.6/stable`,
+  `maas_vcpus/memory/disk = 4/8192/50`, `deploy_series = noble`, `image_sync_timeout = 60m`,
+  `upstream_dns = 1.1.1.1`, `lxd_https_port = 8443`; `maas_url`/`maas_token` are derived, not inputs.
 - sunbeam: `region = RegionOne`, `db_topology = single`, `project_network = 192.168.0.0/24`,
   external-net params, demo credentials
 - hooks: `hooks_dir = hooks` (default), `no_hooks = false`
@@ -279,7 +322,7 @@ Set of Markdown files under `docs/` with `docs/index.md` as the index (landing p
 - `configuration.md` — full variable/flag reference (LXD, microceph, sunbeam)
 - `architecture.md` — repo layout, terraform modules, phases, data flow, host-storage model
 - `manual-provider.md` — manual topology, networks, sunbeam flow
-- `maas-provider.md` — MAAS topology, LXD power driver + MAAS automation, sunbeam flow
+- `maas-provider.md` — MAAS topology, deployment and configuration, sunbeam flow
 - `shared-directory.md` — `/shared` feature via LXD `disk` device (mechanics, requirements, usage)
 - `hooks.md` — user hooks (naming/timing table, execution order, env + stdin contract, examples)
 - `cloud-init-templating.md` — per-VM cloud-init template resolution, template vars, user-data vs
@@ -306,7 +349,7 @@ Docs are authored as implementation tasks alongside the code they describe.
 - Python unit tests (mocked, `uv run pytest`) for: variable resolution, manifest rendering, phase
   gating, prerequisite checks (`preflight`), install idempotency + `verify_ceph` (OSD `up` / RBD pool
   present / abort on no OSD), terraform var mapping (incl. `cloud_init_templates_dir` absolutization),
-  MAAS-automation call sequence (`power_type=lxd` params), sunbeam manual/maas sequences, and hooks
+  `maas-config` apply and MAAS output resolution, sunbeam manual/maas sequences, the `manual` pinning suite, and hooks
   (discovery, env + stdin contract, non-zero abort, `--no-hooks`).
 - `sandbed ... plan` as dry-run (renders `terraform plan` without applying).
 - Smoke (real host, manual): assert VMs reachable over `mgmt`; manual path asserts
@@ -320,16 +363,15 @@ Docs are authored as implementation tasks alongside the code they describe.
 - **Nested Ceph (accepted):** host microceph (single-node, loop-backed OSD) feeds RBD to guest
   Sunbeam microceph (3-node). Loop-backed OSD on a single host trades durability/performance for
   dev-box simplicity.
-- **MAAS infrastructure external:** MAAS region/rack controllers assumed running; the script
-  automates machine enlistment/commissioning, the LXD power driver, and all MAAS configuration, not
-  the MAAS install. Requires MAAS ≥ 3.x (`lxd` power driver support) + LXD HTTPS trust.
+- **MAAS in one VM (accepted):** region and rack controllers share one LXD VM with the single-node,
+  non-HA maas-test-db. The `maas` snap channel must support the 26.04 guest (default `3.6/stable`).
 - **terraform-lxd maturity:** the Canonical `terraform-lxd/lxd` provider's support for `ceph`
   storage pools, VMs, and virtiofs `disk` devices must be validated against its registry docs before
   coding; 10–16 VMs need ample host RAM/CPU.
 
 ## 15. Out of scope
 
-- Installing/operating MAAS region/rack controllers themselves.
+- MAAS high availability (several region/rack controllers, external PostgreSQL).
 - Standalone OpenStack operations (upgrades, backup/restore, scaling) beyond the initial deploy.
 - Any non-LXD target (bare metal, other hypervisors, LXD containers).
 - Remote/SSH LXD targets; `sandbed` and Terraform run on the hypervisor itself.
