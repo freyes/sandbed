@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 
 import click
@@ -15,6 +16,14 @@ from .state import PhaseState
 from .sunbeam import deploy_sunbeam
 
 PHASES = ["preflight", "install-tools", "terraform", "maas-setup", "sunbeam"]
+# Phases that need the MAAS URL/token/client host, which only exist once `terraform` has run.
+MAAS_RESOLVED_PHASES = ("maas-setup", "sunbeam")
+
+
+def _timeout(_ctx: click.Context, _param: click.Parameter, value: str | None) -> str | None:
+    if value is not None and not re.fullmatch(r"\d+[mh]", value):
+        raise click.BadParameter("use <N>m or <N>h, e.g. 60m or 2h")
+    return value
 
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -43,9 +52,17 @@ def cli() -> None:
 @click.option("--ssh-key", envvar="SUNBEAM_SSH_KEY")
 @click.option("--ssh-host")
 @click.option("--maas-name")
-@click.option("--maas-url")
-@click.option("--maas-token")
 @click.option("--maas-space")
+@click.option("--maas-channel")
+@click.option("--maas-vcpus", type=int)
+@click.option("--maas-memory", type=int)
+@click.option("--maas-disk", type=int)
+@click.option("--maas-admin-password")
+@click.option("--maas-deploy-series")
+@click.option("--maas-image-sync-timeout", callback=_timeout)
+@click.option("--maas-upstream-dns")
+@click.option("--maas-parallelism", type=int)
+@click.option("--lxd-https-port", type=int)
 @click.option("--hooks-dir", default="hooks")
 @click.option("--no-hooks", is_flag=True)
 @click.option("--cloud-init-templates-dir")
@@ -74,10 +91,9 @@ def sunbeam(provider: str, action: str, **flags) -> None:
 
     if action == "plan":
         terraform.plan(ctx, provider)
+        if provider == "maas":
+            click.echo("note: maas-config is not planned; it needs a running MAAS")
         return
-
-    if action == "up" and provider == "maas" and not (ctx.maas_url and ctx.maas_token):
-        raise click.UsageError("maas provider requires --maas-url and --maas-token")
 
     if action == "up":
         steps = PHASES
@@ -94,6 +110,8 @@ def sunbeam(provider: str, action: str, **flags) -> None:
             if state.is_done(phase):
                 click.echo(f"skip {phase} (already done)")
                 continue
+            if provider == "maas" and phase in MAAS_RESOLVED_PHASES:
+                terraform.resolve_maas(ctx)
             if not ctx.no_hooks:
                 run_hook(f"{phase}.pre", ctx)
             try:
