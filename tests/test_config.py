@@ -38,3 +38,20 @@ def test_config_testflinger_override() -> None:
     assert cfg.testflinger_series == "noble"
     assert cfg.testflinger_timeout == "30m"
     assert cfg.testflinger_key == ["lp:user"]
+
+def test_maas_defaults() -> None:
+    cfg = load_config("maas", "up")
+    assert cfg.maas_name == "sandbed"
+    assert cfg.maas_admin_password == "changeme"
+    assert cfg.maas_deploy_series == "noble"
+    assert cfg.maas_channel == "3.6/stable"
+    assert cfg.maas_image_sync_timeout == "60m"
+    assert (cfg.maas_vcpus, cfg.maas_memory, cfg.maas_disk) == (4, 8192, 50)
+
+
+def test_maas_name_override_wins() -> None:
+    assert load_config("maas", "up", maas_name="mycloud").maas_name == "mycloud"
+
+
+def test_manual_keeps_empty_maas_name() -> None:
+    assert load_config("manual", "up").maas_name == ""

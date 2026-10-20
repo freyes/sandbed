@@ -36,6 +36,15 @@ class Config:
     maas_token: str = ""
     maas_space: str = "myspace"
     lxd_https_port: int = 8443
+    maas_admin_password: str = "changeme"
+    maas_channel: str = "3.6/stable"
+    maas_vcpus: int = 4
+    maas_memory: int = 8192
+    maas_disk: int = 50
+    maas_deploy_series: str = "noble"
+    maas_image_sync_timeout: str = "60m"
+    maas_upstream_dns: str = "1.1.1.1"
+    maas_parallelism: int = 10
     internal_api_range: str = ""
     public_api_range: str = ""
     floating_ip_range: str = ""
@@ -75,4 +84,6 @@ def load_config(provider: str, action: str, **overrides) -> Config:
             if isinstance(value, tuple):
                 value = list(value)
             setattr(cfg, key, value)
+    if provider == "maas" and not cfg.maas_name:
+        cfg.maas_name = "sandbed"
     return cfg
