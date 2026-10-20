@@ -63,7 +63,7 @@ resource "lxd_instance" "cloud" {
   type  = "virtual-machine"
   image = var.image_fingerprint
 
-  timeouts {
+  timeouts = {
     create = "10m"
   }
 
