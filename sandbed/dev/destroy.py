@@ -68,11 +68,13 @@ def destroy(ctx: LabContext, run_id: str, registry: Registry) -> dict:
         if remaining:
             rec.provisioning_state = "cleanup_failed"
             ctx.store.save(rec)
-            registry.set_state(rec.lab_uuid, "cleanup_failed")
+            with registry.locked():
+                registry.set_state(rec.lab_uuid, "cleanup_failed")
             raise ProvisioningError(
                 f"resources remain after destroy: {remaining}", evidence=tuple(evidence)
             )
         rec.provisioning_state = "destroyed"
         ctx.store.save(rec)
-        registry.set_state(rec.lab_uuid, "destroyed")
+        with registry.locked():
+            registry.set_state(rec.lab_uuid, "destroyed")
     return {"destroyed": True, "evidence": evidence}

@@ -14,6 +14,7 @@ from sandbed.dev.labs import LabEntry, Registry, lab_prefix
 from sandbed.dev.paths import lab_paths
 from sandbed.dev.record import DEFAULT_CONFIG, LabRecord, LabStore, config_hash
 from sandbed.dev.state import AttemptLog
+from sandbed.dev.store import LockBusy, exclusive_lock
 
 
 def make_ctx(tmp_path) -> tuple[LabContext, Registry]:
@@ -104,3 +105,40 @@ def test_guest_teardown_failure_does_not_stop_vm_cleanup(tmp_path) -> None:
     ):
         result = destroy_mod.destroy(ctx, "run1", reg)
     assert result["destroyed"] and "guest teardown skipped" in result["evidence"][0]
+
+
+def _lock_guard(reg: Registry) -> tuple[list[bool], callable]:
+    """Wrap ``set_state`` so each call records whether the registry lock was held."""
+    held: list[bool] = []
+    original = reg.set_state
+
+    def guarded(lab_uuid: str, state: str) -> None:
+        try:
+            with exclusive_lock(reg.root / "registry.lock", timeout=0.05):
+                pass
+            held.append(False)  # lock was NOT held by the caller
+        except LockBusy:
+            held.append(True)
+        original(lab_uuid, state)
+
+    reg.set_state = guarded
+    return held, original
+
+
+def test_destroy_holds_registry_lock_for_set_state_destroyed(tmp_path) -> None:
+    ctx, reg = make_ctx(tmp_path)
+    held, _ = _lock_guard(reg)
+    with patch.object(destroy_mod, "run", return_value=not_found()):
+        destroy_mod.destroy(ctx, "run1", reg)
+    assert held == [True]
+    assert reg.reserved_cidrs() == []
+
+
+def test_destroy_holds_registry_lock_for_set_state_cleanup_failed(tmp_path) -> None:
+    ctx, reg = make_ctx(tmp_path)
+    held, _ = _lock_guard(reg)
+    with patch.object(destroy_mod, "run", return_value=shell("{}")):
+        with pytest.raises(ProvisioningError, match="remain"):
+            destroy_mod.destroy(ctx, "run1", reg)
+    assert held == [True]
+    assert reg.reserved_cidrs() == ["10.213.0.0/24"]
