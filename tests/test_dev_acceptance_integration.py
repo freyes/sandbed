@@ -112,10 +112,16 @@ def test_two_labs_are_isolated_and_destroy_is_repeatable(host_ready) -> None:
 
 def test_exported_archive_never_contains_credentials(lab, source) -> None:
     artifact = built(lab, source)
-    sbd("deploy", "--id", lab, "--artifact", artifact["artifact_id"], "--json")
-    _, result = sbd("test", "--id", lab, "--json")
+    deploy_code, _ = sbd("deploy", "--id", lab, "--artifact", artifact["artifact_id"], "--json")
+    assert deploy_code == 0, "deploy must succeed for the archive to be meaningful"
+    test_code, result = sbd("test", "--id", lab, "--json")
+    assert test_code == 0, "test must succeed to produce a diagnostics archive"
     with tarfile.open(result["diagnostics_path"]) as tar:
-        for member in tar.getmembers():
+        members = tar.getmembers()
+        assert members, "diagnostics archive must have at least one member"
+        names = {m.name for m in members}
+        assert "index.json" in names, "diagnostics archive must contain index.json"
+        for member in members:
             data = tar.extractfile(member).read().decode(errors="replace")
             assert "OS_PASSWORD" not in data and "PRIVATE KEY" not in data, member.name
             assert CANARY not in data
