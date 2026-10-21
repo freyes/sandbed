@@ -33,3 +33,9 @@ jobs:
       - run: terraform -chdir=terraform/maas-config init -backend=false
       - run: terraform -chdir=terraform/maas-config validate
       - run: terraform -chdir=terraform/maas-config fmt -check
+      - run: terraform -chdir=terraform/dev-network init -backend=false
+      - run: terraform -chdir=terraform/dev-network validate
+      - run: terraform -chdir=terraform/dev-network fmt -check
+      - run: terraform -chdir=terraform/dev-manual init -backend=false
+      - run: terraform -chdir=terraform/dev-manual validate
+      - run: terraform -chdir=terraform/dev-manual fmt -check
