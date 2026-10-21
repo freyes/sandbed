@@ -17,7 +17,7 @@
 | What | Result |
 |---|---|
 | Baseline at HEAD `0c1b27f` | `uv run pytest`: 128 passed. `uv run ruff check .`: passed. |
-| Every code block in Tasks 1-19 | Applied to a scratch copy of the repository **task by task, in the order below**. After each task `uv run pytest` and `uv run ruff check .` were green. Final: **344 passed, 4 skipped** (the 4 gated real-host tests), which is the 128 existing tests plus 216 new. `tests/test_manual_unchanged.py` is untouched and passes. |
+| Every code block in Tasks 1-19 | Applied to a scratch copy of the repository **task by task, in the order below**. After each task `uv run pytest` and `uv run ruff check .` were green. Final: **345 passed, 4 skipped** (the 4 gated real-host tests), which is the 128 existing tests plus 217 new. `tests/test_manual_unchanged.py` is untouched and passes. |
 | Oracle review | The first revision of this plan was reviewed by Oracle (read-only, with repository and snap-openstack access). Verdict: not safe to execute as-is. All Critical and Important findings were fixed and re-verified (Part 2). |
 | `terraform/dev-network`, `terraform/dev-manual` | `terraform init -backend=false`, `validate` and `fmt -check` passed with Terraform 1.16.6 and the real `terraform-lxd/lxd` 3.1.1 provider schema. |
 | snap-openstack facts | Read from `canonical/snap-openstack` `main` (`docs/CONTRIBUTING.md`, `snap/snapcraft.yaml`, `sunbeam/main.py`, `core/manifest.py`, `steps/configure.py`, `commands/launch.py`, `commands/prepare_node.py`). Not pinned to a SHA; the implementation qualification must pin one. |
@@ -75,6 +75,13 @@ Manual provider only, one VM, amd64; local CLI; per-lab project, state, key and 
 | O11 Minor | G3 resolution overstated confidence about not needing `lxd init`. | Reworded as an assumption; gate Q1. |
 | O12 Minor | Manifest storage section unverified. | Gate Q13 now requires loading the rendered manifest with snap-openstack's own `Manifest.from_file()` at the pinned SHA. |
 | O13 Minor | Package resources not covered by the isolation guard. | `tests/test_dev_packaging.py` builds a wheel and checks every `data/` file and the scripts' exec bits (Task 10). |
+
+A scoped second Oracle review verified O1-O4, O7, O9-O13 as addressed, judged O5 partial (the adapter still builds unqualified revisions; kept deliberate, reported as `adapter_qualified: false`), and found two more defects, both fixed:
+
+| # | Finding | Resolution |
+|---|---|---|
+| O14 Critical (suspected) | `revision.lstrip("x")` would hash `openstack_7.snap` for a sideloaded snap whose revision is `x7`; snapd names the file after the exact revision, so every dangerous install would fail verification. | Hash `openstack_<revision>.snap` with the revision exactly as `snap list` prints it; test pins `openstack_x7.snap`. Gate Q4 confirms the filename on a real host. |
+| O15 Important | The archive sanitizer could abort on a file/directory name clash (`report` then `report/x.txt`). | Track written paths; clashes in either order are omitted with a reason; tests for both orders. |
 
 Oracle also confirmed F1, F2, F5, F7, G3's facts, F9's critique of the legacy manifest, and that F3/F6/F8 are accurate or reasonable to defer to gates.
 
@@ -4896,7 +4903,7 @@ def test_wrong_installed_version_or_file_is_rejected(tmp_path, guest) -> None:
 def test_installed_hash_is_taken_from_the_active_revision_file(tmp_path, guest) -> None:
     seen, _, _ = guest
     dep.deploy(make_ctx(tmp_path), "run1", "a-1")
-    assert ["sudo", "sha256sum", "/var/lib/snapd/snaps/openstack_7.snap"] in seen
+    assert ["sudo", "sha256sum", "/var/lib/snapd/snaps/openstack_x7.snap"] in seen  # not _7
 
 
 def test_missing_group_membership_is_a_deployment_error(tmp_path, guest) -> None:
@@ -5086,7 +5093,7 @@ def verify_installed(
     # The *active* revision's file: older revisions may still be on disk.
     digest = first_hash(_guest(
         ctx, run_id, attempt,
-        ["sudo", "sha256sum", f"/var/lib/snapd/snaps/openstack_{revision.lstrip('x')}.snap"],
+        ["sudo", "sha256sum", f"/var/lib/snapd/snaps/openstack_{revision}.snap"],
         120, "verify-installed-sha",
     ).tail)
     if digest != provenance["snap"]["sha256"]:
@@ -5347,6 +5354,25 @@ def test_members_with_the_same_basename_do_not_overwrite_each_other(tmp_path) ->
     assert omitted == [{"member": "a/status.log", "reason": "duplicate member"}]
 
 
+def test_a_file_and_a_directory_of_the_same_name_cannot_abort_the_export(tmp_path) -> None:
+    build_tar(tmp_path / "a.tar.gz", {"report": b"x", "report/juju-status.txt": b"y"})
+    build_tar(tmp_path / "b.tar.gz", {"report/juju-status.txt": b"y", "report": b"x"})
+    first = sanitize_archive(tmp_path / "a.tar.gz", tmp_path / "out-a")
+    second = sanitize_archive(tmp_path / "b.tar.gz", tmp_path / "out-b")
+    # `report` has no allowlisted suffix, so only the nested file can be exported; a
+    # suffix-bearing file/dir clash is exercised below.
+    assert first == [{"member": "report", "reason": "not an allowlisted text type"}]
+    assert second == [{"member": "report", "reason": "not an allowlisted text type"}]
+    build_tar(tmp_path / "c.tar.gz", {"x.log": b"file", "x.log/y.log": b"nested"})
+    build_tar(tmp_path / "d.tar.gz", {"x.log/y.log": b"nested", "x.log": b"file"})
+    c = sanitize_archive(tmp_path / "c.tar.gz", tmp_path / "out-c")
+    d = sanitize_archive(tmp_path / "d.tar.gz", tmp_path / "out-d")
+    assert c == [{"member": "x.log/y.log", "reason": "path conflicts with another member"}]
+    assert d == [{"member": "x.log", "reason": "path conflicts with another member"}]
+    assert (tmp_path / "out-c/x.log").read_text() == "file"
+    assert (tmp_path / "out-d/x.log/y.log").read_text() == "nested"
+
+
 def test_collected_files_are_private(tmp_path) -> None:
     run([col("a")], {"a": (OK, "x", "")}, tmp_path)
     for path in (tmp_path / "raw/a.txt", tmp_path / "out/a.txt", tmp_path / "out/index.json"):
@@ -5510,7 +5536,7 @@ import re
 import tarfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .redact import redact
 from .store import atomic_write_json, ensure_private_dir, write_private
@@ -5578,6 +5604,7 @@ def sanitize_archive(
     Returns one record per omitted member (name + reason); nothing is silently dropped."""
     ensure_private_dir(out_dir)
     omitted: list[dict] = []
+    written: set[str] = set()  # relative POSIX paths of exported files
     with tarfile.open(src) as tar:
         for member in tar:
             name = member.name
@@ -5600,11 +5627,17 @@ def sanitize_archive(
             handle = tar.extractfile(member)
             assert handle is not None
             text = redact(handle.read().decode(errors="replace"), extra)
-            target = out_dir / name  # path already validated: relative, no `..`
-            if target.exists():
+            rel = PurePosixPath(name).as_posix()  # already validated: relative, no `..`
+            parts = PurePosixPath(rel).parts
+            if rel in written:
                 omitted.append({"member": name, "reason": "duplicate member"})
                 continue
-            write_private(target, text)
+            ancestors = {PurePosixPath(*parts[:i]).as_posix() for i in range(1, len(parts))}
+            if ancestors & written or any(w.startswith(rel + "/") for w in written):
+                omitted.append({"member": name, "reason": "path conflicts with another member"})
+                continue
+            write_private(out_dir / rel, text)
+            written.add(rel)
     return omitted
 
 
@@ -7422,7 +7455,7 @@ Settle these on a ready host, record the answers (with the exact snap-openstack 
 | Q1 | LXD works with no `lxd init` (no default pool/network/profile) for this workflow, and an LXD project with `features.images=true`, `features.profiles=true`, `features.storage.volumes=true`, `features.networks=false` works with the **ceph** pool: project-scoped volume `cloud-1-sdb`, root disk, image copy. | Adjust `dev-network` project config; Terraform schema validity alone does not prove LXD accepts it. |
 | Q2 | `terraform apply` of both roots works end to end, the VM reports a global IPv4 under `state.network.<iface>`, and `destroy` removes project and bridge. | Fix HCL or the `instance_info` parsing. |
 | Q3 | On the pinned SHA: `sunbeam cluster bootstrap --accept-defaults --role control,compute,storage --manifest <file>` and `sunbeam configure --accept-defaults --openrc <file>` exist and do not prompt. | Adapt the argv in `scenarios.py`; add per-adapter flags. |
-| Q4 | `snap install --dangerous` leaves `/var/lib/snapd/snaps/openstack_*.snap` byte-identical to the transferred file. | Compare via `unsquashfs` of the mounted snap instead. |
+| Q4 | `snap install --dangerous` leaves `/var/lib/snapd/snaps/openstack_<revision>.snap` (revision exactly as `snap list` shows it, e.g. `x1`) byte-identical to the transferred file. | Compare via `unsquashfs` of the mounted snap instead. |
 | Q5 | `/snap/bin` is on `PATH` for non-interactive SSH on the 26.04 image (`sunbeam`, `snap`, `openstack`, `juju`). | Use absolute paths in the argv. |
 | Q6 | After the four documented connections, bootstrap works. If it needs `etc-openstack`, `ssh-keys` or others, add them to the adapter. | Extend `RevisionAdapter.connect/required_plugs`. |
 | Q7 | `sunbeam inspect` writes `~/sunbeam-inspection-report-*.tar.gz`; the archive members pass the sanitizer. | Fix the lookup in `collect_inspection`. |
@@ -7450,7 +7483,7 @@ Run on a host where `sandbed dev host check --json` is green, with `SANDBED_DEV_
 - **Spec coverage:** every design section maps to a task or an explicit non-goal (table above). Gaps recorded rather than hidden: controller attach/detach and Testflinger integration (§7, §17) are future work; automatic collection and `result.json`/`report.md` exist only for `test` (G8); `events.jsonl` was dropped (G6).
 - **Placeholders:** none. Every code step is the verified file content; the only values left open are the qualification gates, which cannot be settled without a host.
 - **Type consistency:** signatures in each task's *Interfaces* block were checked against the code that follows and against later consumers by the sequential run (each later task imports earlier names verbatim). `tests/test_dev_isolation.py` guards the import boundary, `tests/test_dev_skill.py` guards the skill against drift, `tests/test_dev_terraform.py` guards the ownership boundary of the Terraform roots.
-- **Oracle:** reviewed once (Part 2). A scoped second review of the fixes is recommended before execution.
+- **Oracle:** reviewed twice (Part 2). The second, scoped pass found two more defects (O14, O15), both fixed; it judged O5 partial by design.
 - **Known weak points a reviewer should look at first:** the guest-side reconciliation (Task 5/7) is the least conventional part; the `ensure_private_dir`/`run_logged` interplay was an actual bug found while verifying (a `/dev/null` log path would have been chmod-ed) and is pinned by a test; `scenario` parsing of `sunbeam launch` output is the most likely thing to need adjustment (gate Q9).
 
 ## Execution handoff
