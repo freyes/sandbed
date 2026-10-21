@@ -14,7 +14,7 @@ CI (`.github/workflows/ci.yml`) runs all of the above. Keep them green.
 
 ## Layout
 - `sandbed/`: package, one module per concern. `cli.py` is a click group with two subcommands: `sunbeam` (legacy phases) and `dev` (development labs, `sandbed/dev/`).
-- `terraform/`: `network/` is shared. `manual/` and `maas/` are provider modules. `maas-config` configures MAAS (Canonical `maas` provider) from `maas/`'s local state. `dev-network/` and `dev-manual/` are copied per lab by `sandbed dev` and own only that lab's resources.
+- `terraform/`: `network/` is shared. `manual/` and `maas/` are provider modules. `maas-config/` configures MAAS (Canonical `maas` provider) from `maas/`'s local state. `dev-network/` and `dev-manual/` are copied per lab by `sandbed dev` and own only that lab's resources.
 - `manifests/`, `templates/`: Jinja2 templates. `hooks/`: user hook scripts. `docs/`: user docs.
 - `skills/snap-openstack-dev/`: agent skill for using `sandbed dev`. `sandbed-design.md`: design doc.
 
