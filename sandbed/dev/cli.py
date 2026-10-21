@@ -8,7 +8,7 @@ import click
 
 from . import commands
 from .capabilities import capabilities
-from .errors import EXIT_INTERRUPTED, DevError, Interrupted
+from .errors import EXIT_INTERRUPTED, DevError, InternalError, Interrupted
 from .results import emit, envelope, error_envelope
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -39,6 +39,10 @@ def execute(command: str, json_mode: bool, body: Callable[[], dict]) -> None:
         emit(error_envelope(command, err), json_mode=json_mode)
         raise SystemExit(EXIT_INTERRUPTED) from None
     except DevError as err:
+        emit(error_envelope(command, err), json_mode=json_mode)
+        raise SystemExit(err.exit_code) from None
+    except Exception as exc:
+        err = InternalError(f"{type(exc).__name__}: {exc}")
         emit(error_envelope(command, err), json_mode=json_mode)
         raise SystemExit(err.exit_code) from None
 

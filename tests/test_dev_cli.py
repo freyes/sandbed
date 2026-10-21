@@ -40,6 +40,19 @@ def test_capabilities_tolerates_missing_git(fake_run) -> None:
     assert payload["sandbed"]["dirty"] is None
 
 
+@patch("sandbed.dev.cli.capabilities", side_effect=RuntimeError("boom"))
+def test_execute_reports_unexpected_exception_as_internal(fake_cap) -> None:
+    result = CliRunner().invoke(cli, ["dev", "capabilities", "--json"])
+    assert result.exit_code == 6
+    payload = json.loads(result.output)
+    assert payload["status"] == "failed"
+    assert payload["failure_category"] == "internal"
+    assert "boom" in payload["message"]
+    assert payload["message"].startswith("RuntimeError: ")
+    lines = [ln for ln in result.output.splitlines() if ln.strip()]
+    assert len(lines) == 1
+
+
 def test_use_testflinger_is_rejected_not_forwarded() -> None:
     result = CliRunner().invoke(cli, ["dev", "--use-testflinger", "capabilities"])
     assert result.exit_code == 2
