@@ -11,10 +11,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .errors import DevError
+from .errors import InputError
 
 
-class LockBusy(DevError):
+class LockBusy(InputError):
     """Another sandbed process holds the lock."""
 
 

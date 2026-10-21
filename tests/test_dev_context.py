@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+import multiprocessing
 import uuid
 
 import pytest
+from click.testing import CliRunner
 
+from sandbed.cli import cli
 from sandbed.dev import context
 from sandbed.dev.context import open_lab
-from sandbed.dev.errors import InputError
+from sandbed.dev.errors import FailureCategory, InputError
 from sandbed.dev.labs import LabEntry, Registry, lab_prefix
 from sandbed.dev.paths import lab_paths
 from sandbed.dev.record import DEFAULT_CONFIG, LabRecord, LabStore, config_hash
@@ -119,3 +123,63 @@ def test_host_probe_matches_only_this_labs_directory_literally(tmp_path, monkeyp
     with patch.object(context, "run", return_value=MagicMock(returncode=1)):
         assert context.host_probe(paths)(None) == "stopped"
     assert context.ere_escape("a.b*c") == "a\\.b\\*c"
+
+
+def _hold_lock(path: str, ready, release) -> None:
+    from pathlib import Path
+
+    with exclusive_lock(Path(path)):
+        ready.set()
+        release.wait(10)
+
+
+def test_open_lab_on_a_held_lock_is_an_input_category_error(tmp_path) -> None:
+    """Lock contention is an incompatible-state input error (exit 2), not an internal bug."""
+    reg, paths = make_lab(tmp_path)
+    ready, release = multiprocessing.Event(), multiprocessing.Event()
+    proc = multiprocessing.Process(target=_hold_lock, args=(str(paths.lock), ready, release))
+    proc.start()
+    try:
+        assert ready.wait(10)
+        with pytest.raises(LockBusy) as exc_info:
+            with open_lab("a", mutate=False, registry=reg, uid=UID, probe=stopped):
+                pass
+    finally:
+        release.set()
+        proc.join(10)
+    err = exc_info.value
+    assert err.category is FailureCategory.INPUT
+    assert err.exit_code == 2
+
+
+def test_held_lab_lock_surfaces_as_input_error_through_the_cli(tmp_path, monkeypatch) -> None:
+    """The published CLI contract reports lock contention as exit 2 / failure_category input."""
+    import os
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    from sandbed.dev.paths import state_root
+
+    root = state_root()
+    reg = Registry(root)
+    lab = str(uuid.uuid4())
+    uid = os.getuid()
+    reg.add(LabEntry(lab, "a", uid, ["10.213.0.0/24"]))
+    paths = lab_paths(lab, root)
+    LabStore(paths).save(
+        LabRecord(lab, "a", uid, lab_prefix(lab), "10.213.0.0/24", dict(DEFAULT_CONFIG),
+                  config_hash(DEFAULT_CONFIG))
+    )
+    ready, release = multiprocessing.Event(), multiprocessing.Event()
+    proc = multiprocessing.Process(target=_hold_lock, args=(str(paths.lock), ready, release))
+    proc.start()
+    try:
+        assert ready.wait(10)
+        result = CliRunner().invoke(cli, ["dev", "status", "--id", "a", "--json"])
+    finally:
+        release.set()
+        proc.join(10)
+    payload = json.loads(result.output)
+    assert result.exit_code == 2
+    assert payload["status"] == "failed"
+    assert payload["failure_category"] == "input"
+    assert "lock is held" in payload["message"]

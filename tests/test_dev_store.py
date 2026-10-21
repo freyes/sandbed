@@ -7,6 +7,7 @@ import stat
 
 import pytest
 
+from sandbed.dev.errors import FailureCategory
 from sandbed.dev.store import (
     LockBusy,
     atomic_write_json,
@@ -14,6 +15,13 @@ from sandbed.dev.store import (
     read_json,
     write_private,
 )
+
+
+def test_lockbusy_is_an_input_category_error() -> None:
+    """Lock contention is a normal concurrent-invocation conflict, not an internal bug."""
+    assert LockBusy.category is FailureCategory.INPUT
+    assert LockBusy("held").exit_code == 2
+
 
 
 def test_atomic_write_is_private_and_leaves_no_temp_files(tmp_path) -> None:
