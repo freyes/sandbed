@@ -72,9 +72,11 @@ def create(label: str, *, provider: str, profile: str, overrides: dict) -> dict:
     if not exists:
         require_host()
         ensure_private_dir(reg.root)
+        # Outside the registry lock: a slow host query must not block other sandbed processes.
+        host_cidrs = taken_cidrs()
         with reg.locked():
             lab_uuid = str(uuid.uuid4())
-            cidr = pick_cidr([*reg.reserved_cidrs(), *taken_cidrs()])
+            cidr = pick_cidr([*reg.reserved_cidrs(), *host_cidrs])
             paths = lab_paths(lab_uuid, reg.root)
             # Record first, publish second: a crash in between leaves an unreferenced
             # directory, never a reserved label and CIDR with no usable lab record.

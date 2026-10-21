@@ -8,8 +8,9 @@ from click.testing import CliRunner
 
 from sandbed.cli import cli
 from sandbed.dev import commands
-from sandbed.dev.errors import DeploymentError, InputError, ScenarioError
+from sandbed.dev.errors import DeploymentError, HostError, InputError, ScenarioError
 from sandbed.dev.record import LabStore
+from sandbed.dev.store import LockBusy, exclusive_lock
 
 
 @pytest.fixture
@@ -195,3 +196,54 @@ def test_incomplete_collection_is_nonzero(state) -> None:
     with patch.object(commands, "collect_run", return_value=partial):
         out = commands.collect("a", run_id)
     assert out["exit_code"] == 6 and out["status"] == "failed"
+
+
+def test_taken_cidrs_runs_outside_the_registry_lock(state) -> None:
+    """`taken_cidrs()` must not be called while the host-wide registry lock is held, so a slow
+    host query cannot block every other sandbed process."""
+    reg_root = commands.Registry().root
+    lock_path = reg_root / "registry.lock"
+    observed: list[bool] = []
+
+    def spy_taken_cidrs():
+        try:
+            with exclusive_lock(lock_path, timeout=0.05):
+                pass
+            observed.append(False)  # lock was NOT held by create()
+        except LockBusy:
+            observed.append(True)  # lock WAS held -- the bug we are guarding against
+        return []
+
+    with (
+        patch.object(commands, "require_host"),
+        patch.object(commands, "taken_cidrs", side_effect=spy_taken_cidrs),
+        patch.object(commands, "provision") as prov,
+    ):
+        def fake_provision(ctx, run_id):
+            ctx.record.provisioning_state, ctx.record.vm_address = "ready", "10.213.0.7"
+            ctx.store.save(ctx.record)
+            return ctx.record
+
+        prov.side_effect = fake_provision
+        commands.create("a", provider="manual", profile="single-node", overrides={})
+    assert observed == [False], "taken_cidrs() was called while the registry lock was held"
+
+
+def test_a_hosterror_from_taken_cidrs_aborts_create_without_side_effects(state) -> None:
+    """If the host cannot be queried for taken CIDRs, `create` must fail closed: no lab
+    directory, no registry entry, no reserved label."""
+    reg = commands.Registry()
+    labs_dir = reg.root / "labs"
+    initial_entries = reg.entries()
+
+    with (
+        patch.object(commands, "require_host"),
+        patch.object(commands, "taken_cidrs", side_effect=HostError("ip -j route: boom")),
+    ):
+        with pytest.raises(HostError, match="ip -j route"):
+            commands.create("a", provider="manual", profile="single-node", overrides={})
+    assert reg.entries() == initial_entries
+    assert reg.reserved_cidrs() == []
+    if labs_dir.exists():
+        assert not list(labs_dir.glob("*"))
+
