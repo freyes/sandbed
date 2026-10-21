@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -47,14 +48,16 @@ def test_owned_resources_reports_project_and_network(tmp_path) -> None:
             return shell("{}")
         return shell(json.dumps([net, "/1.0/networks/lxdbr0"]))
 
-    with patch.object(destroy_mod, "run", fake):
+    with patch.object(destroy_mod.subprocess, "run", fake):
         assert destroy_mod.owned_resources(ctx.record) == [
             f"project:{ctx.record.project}", f"network:{ctx.record.project}-m"]
 
 
 def test_owned_resources_cannot_claim_absence_when_lxd_is_broken(tmp_path) -> None:
     ctx, _ = make_ctx(tmp_path)
-    with patch.object(destroy_mod, "run", return_value=shell("", 1, "connection refused")):
+    with patch.object(
+        destroy_mod.subprocess, "run", return_value=shell("", 1, "connection refused")
+    ):
         with pytest.raises(HostError):
             destroy_mod.owned_resources(ctx.record)
 
@@ -68,7 +71,7 @@ def test_destroy_reverses_terraform_order_and_releases_the_registry(tmp_path) ->
     order = []
     with (
         patch.object(destroy_mod, "terraform", lambda c, r, root, *a: order.append((root, a[0]))),
-        patch.object(destroy_mod, "run", return_value=not_found()),
+        patch.object(destroy_mod.subprocess, "run", return_value=not_found()),
     ):
         destroy_mod.destroy(ctx, "run1", reg)
     assert order == [("dev-manual", "destroy"), ("dev-network", "destroy")]
@@ -78,7 +81,7 @@ def test_destroy_reverses_terraform_order_and_releases_the_registry(tmp_path) ->
 
 def test_destroy_with_leftovers_is_cleanup_failed_and_keeps_the_cidr(tmp_path) -> None:
     ctx, reg = make_ctx(tmp_path)
-    with patch.object(destroy_mod, "run", return_value=shell("{}")):
+    with patch.object(destroy_mod.subprocess, "run", return_value=shell("{}")):
         with pytest.raises(ProvisioningError, match="remain"):
             destroy_mod.destroy(ctx, "run1", reg)
     assert reg.reserved_cidrs() == ["10.213.0.0/24"]
@@ -87,7 +90,7 @@ def test_destroy_with_leftovers_is_cleanup_failed_and_keeps_the_cidr(tmp_path) -
 
 def test_destroy_after_partial_provisioning_without_state_is_fine(tmp_path) -> None:
     ctx, reg = make_ctx(tmp_path)
-    with patch.object(destroy_mod, "run", return_value=not_found()):
+    with patch.object(destroy_mod.subprocess, "run", return_value=not_found()):
         assert destroy_mod.destroy(ctx, "run1", reg)["destroyed"] is True
 
 
@@ -101,7 +104,7 @@ def test_guest_teardown_failure_does_not_stop_vm_cleanup(tmp_path) -> None:
 
     with (
         patch.object(destroy_mod, "run_logged", failing),
-        patch.object(destroy_mod, "run", return_value=not_found()),
+        patch.object(destroy_mod.subprocess, "run", return_value=not_found()),
     ):
         result = destroy_mod.destroy(ctx, "run1", reg)
     assert result["destroyed"] and "guest teardown skipped" in result["evidence"][0]
@@ -128,7 +131,7 @@ def _lock_guard(reg: Registry) -> tuple[list[bool], callable]:
 def test_destroy_holds_registry_lock_for_set_state_destroyed(tmp_path) -> None:
     ctx, reg = make_ctx(tmp_path)
     held, _ = _lock_guard(reg)
-    with patch.object(destroy_mod, "run", return_value=not_found()):
+    with patch.object(destroy_mod.subprocess, "run", return_value=not_found()):
         destroy_mod.destroy(ctx, "run1", reg)
     assert held == [True]
     assert reg.reserved_cidrs() == []
@@ -137,8 +140,23 @@ def test_destroy_holds_registry_lock_for_set_state_destroyed(tmp_path) -> None:
 def test_destroy_holds_registry_lock_for_set_state_cleanup_failed(tmp_path) -> None:
     ctx, reg = make_ctx(tmp_path)
     held, _ = _lock_guard(reg)
-    with patch.object(destroy_mod, "run", return_value=shell("{}")):
+    with patch.object(destroy_mod.subprocess, "run", return_value=shell("{}")):
         with pytest.raises(ProvisioningError, match="remain"):
             destroy_mod.destroy(ctx, "run1", reg)
     assert held == [True]
     assert reg.reserved_cidrs() == ["10.213.0.0/24"]
+
+
+def test_lxc_json_timeout_raises_hosterror() -> None:
+    with patch.object(
+        destroy_mod.subprocess, "run",
+        side_effect=subprocess.TimeoutExpired(["lxc", "query", "/1.0"], 30),
+    ):
+        with pytest.raises(HostError, match="cannot verify"):
+            destroy_mod._lxc_json("/1.0/projects/foo")
+
+
+def test_lxc_json_missing_lxc_raises_hosterror() -> None:
+    with patch.object(destroy_mod.subprocess, "run", side_effect=FileNotFoundError("lxc")):
+        with pytest.raises(HostError, match="cannot verify"):
+            destroy_mod._lxc_json("/1.0/projects/foo")

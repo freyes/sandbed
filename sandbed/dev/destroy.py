@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
-from ..shell import run
 from .context import LabContext
 from .errors import HostError, ProvisioningError
 from .labs import Registry
@@ -18,7 +18,16 @@ GUEST_TEARDOWN_TIMEOUT = 20 * 60
 
 def _lxc_json(path: str):
     """Parsed `lxc query` result, or None when LXD says the object does not exist."""
-    result = run(["lxc", "query", path], check=False)
+    try:
+        result = subprocess.run(
+            ["lxc", "query", path],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as err:
+        raise HostError(f"cannot verify {path}: {err}") from err
     if result.returncode == 0:
         return json.loads(result.stdout or "null")
     if "not found" in (result.stderr or "").lower():
