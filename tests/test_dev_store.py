@@ -88,3 +88,23 @@ def test_write_private_is_0600_even_over_an_existing_wider_file(tmp_path) -> Non
     assert target.read_bytes() == b"two"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+
+
+def test_write_private_is_0600_at_first_byte_over_an_existing_wider_file(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "d" / "f.txt"
+    write_private(target, "one")
+    target.chmod(0o666)
+    captured: dict[str, int] = {}
+    real_fdopen = os.fdopen
+
+    def spy_fdopen(fd: int, *a, **kw):
+        captured["mode"] = stat.S_IMODE(os.fstat(fd).st_mode)
+        return real_fdopen(fd, *a, **kw)
+
+    monkeypatch.setattr(os, "fdopen", spy_fdopen)
+    write_private(target, b"two")
+    assert captured["mode"] == 0o600
+    assert target.read_bytes() == b"two"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600

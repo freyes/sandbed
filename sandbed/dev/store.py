@@ -37,6 +37,7 @@ def write_private(path: Path, data: bytes | str) -> None:
     ensure_private_dir(path.parent)
     payload = data.encode() if isinstance(data, str) else data
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # O_CREAT's mode is ignored for an existing wider file
     with os.fdopen(fd, "wb") as fh:
         fh.write(payload)
     os.chmod(path, 0o600)
