@@ -12,6 +12,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,44 +95,59 @@ def run_logged(
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        if input_text is not None:
-            assert proc.stdin is not None
-            proc.stdin.write(input_text.encode())
-            proc.stdin.close()
-        assert proc.stdout is not None
-        sel = selectors.DefaultSelector()
-        sel.register(proc.stdout, selectors.EVENT_READ)
         try:
-            while True:
-                remaining = timeout - (time.monotonic() - started)
-                if remaining <= 0:
-                    timed_out = True
-                    break
-                if not sel.select(timeout=min(0.5, remaining)):
-                    continue
-                chunk = os.read(proc.stdout.fileno(), 65536)
-                if not chunk:
-                    break
-                log.write(chunk)
-                out.write(chunk.decode(errors="replace"))
-                out.flush()
-                tail = (tail + chunk)[-tail_bytes:]
-            if timed_out:
-                _stop(proc)
-            else:
-                try:
-                    proc.wait(timeout=max(timeout - (time.monotonic() - started), 0.1))
-                except subprocess.TimeoutExpired:
-                    timed_out = True
+            if input_text is not None:
+                assert proc.stdin is not None
+                payload = input_text.encode()
+
+                def _feed() -> None:
+                    try:
+                        proc.stdin.write(payload)
+                        proc.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        pass
+
+                threading.Thread(target=_feed, daemon=True).start()
+            assert proc.stdout is not None
+            sel = selectors.DefaultSelector()
+            sel.register(proc.stdout, selectors.EVENT_READ)
+            try:
+                while True:
+                    remaining = timeout - (time.monotonic() - started)
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    if not sel.select(timeout=min(0.5, remaining)):
+                        continue
+                    chunk = os.read(proc.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    log.write(chunk)
+                    out.write(chunk.decode(errors="replace"))
+                    out.flush()
+                    tail = (tail + chunk)[-tail_bytes:]
+                if timed_out:
                     _stop(proc)
-        except KeyboardInterrupt:
+                else:
+                    try:
+                        proc.wait(timeout=max(timeout - (time.monotonic() - started), 0.1))
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        _stop(proc)
+            except KeyboardInterrupt:
+                _stop(proc)
+                raise Interrupted(
+                    f"interrupted while running: {shlex.join(argv)}", evidence=(str(log_path),)
+                ) from None
+            finally:
+                sel.close()
+                proc.stdout.close()
+        except BaseException:
             _stop(proc)
-            raise Interrupted(
-                f"interrupted while running: {shlex.join(argv)}", evidence=(str(log_path),)
-            ) from None
+            raise
         finally:
-            sel.close()
-            proc.stdout.close()
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
         if timed_out:
             log.write(f"\n[sandbed] timed out after {timeout:g}s\n".encode())
     result = CommandResult(

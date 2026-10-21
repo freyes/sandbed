@@ -86,3 +86,26 @@ def test_stdin_is_delivered(tmp_path) -> None:
         timeout=10, stream=io.StringIO(), input_text="abc",
     )
     assert "ABC" in result.tail
+
+
+def test_large_stdin_to_exiting_child_returns_promptly(tmp_path) -> None:
+    big = "x" * (2 * 1024 * 1024)
+    started = time.monotonic()
+    result = run_logged(
+        py("import sys; sys.exit(0)"), log_path=tmp_path / "c.log",
+        timeout=30, stream=io.StringIO(), input_text=big,
+    )
+    assert result.returncode == 0
+    assert not result.timed_out
+    assert time.monotonic() - started < 10
+
+
+def test_large_stdin_with_sleeping_child_honours_deadline(tmp_path) -> None:
+    big = "x" * (2 * 1024 * 1024)
+    started = time.monotonic()
+    result = run_logged(
+        py("import time; time.sleep(60)"), log_path=tmp_path / "c.log",
+        timeout=1.0, stream=io.StringIO(), input_text=big,
+    )
+    assert result.timed_out
+    assert time.monotonic() - started < 15
