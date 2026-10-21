@@ -7494,3 +7494,24 @@ Plan saved to `docs/superpowers/plans/2026-10-20-dev-lab-milestone-1.md`. Two ex
 2. **Inline execution:** execute tasks in one session with checkpoints (REQUIRED SUB-SKILL: superpowers:executing-plans).
 
 Stop after Task 18. Task 19 plus the gates and runbook need a ready host and the owner's decisions on Q8 and Q10.
+
+---
+
+## Post-implementation amendments
+
+The plan was executed task by task by subagents on `feat/dev-lab-milestone-1` (one commit per task, each reviewed and mechanically compared with the exercised reference code). Reviews raised findings in the plan's own code; the repository owner approved fixing all of them, so the code on the branch deliberately differs from the code blocks above in these places:
+
+| Commit | Change |
+|---|---|
+| `df703f2` | `store.write_private`: `os.fchmod` before writing, so an existing wider file is never exposed |
+| `5bfc97b` | `runner.run_logged`: stdin fed from a daemon thread, closed on every path; no deadlock on large input |
+| `ab4200b` | `capabilities.build_identity` tolerates a missing `git` |
+| `3f4958e` | `cli.execute` reports non-`DevError` exceptions as an internal-error envelope (exit 6) |
+| `1148418` | `tests/test_dev_isolation.py` also catches `import sandbed.x` / `from sandbed import x`, with self-tests |
+| `92f5559` | `destroy` updates registry state under `registry.locked()` |
+| `aa19c08` | `destroy._lxc_json` bounded (30 s, stdin closed); never claims absence on error |
+| `79c0249` | gated secret-export acceptance test is no longer vacuous |
+| `0942ef3` | `hostnet.taken_cidrs` fails closed (bounded, `HostError`), and `create` calls it outside the registry lock |
+| `7d57161` | `LockBusy` is an input-category error (exit 2), not internal |
+
+Final suite: 396 passed, 4 skipped; `ruff` clean. Findings left open as post-merge cleanup (none blocks merge): no parent-directory fsync after `atomic_write_json`; `read_json` propagates `JSONDecodeError`; interrupted envelopes still carry `failure_category: internal`; the guest probe hardcodes the `ubuntu` SSH user although `parse_launch` records the user; duplicate rows for `--include` files in the content manifest; `wait_ready`/`push_guest_scripts` and some `deploy` failure branches have no unit tests. The real-host qualification gates (Q1-Q14) are still open.
