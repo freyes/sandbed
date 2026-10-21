@@ -386,3 +386,20 @@ Docs are authored as implementation tasks alongside the code they describe.
 ## 16. Open questions
 
 None outstanding — all decisions captured in §3.
+
+## 17. Development labs (`sandbed dev`)
+
+Additive workflow for testing a locally built snap-openstack. It shares no state, phase list or
+hooks with `sandbed sunbeam`; see `docs/development-labs.md` for usage.
+
+| Decision | Choice |
+|---|---|
+| Scope | manual provider, one hyperconverged VM, amd64, local execution, one scenario (`bootstrap-and-launch` v1) |
+| Isolation | per-lab LXD project `sbd-<8 hex>`, bridge `sbd-<8 hex>-m` (bridges are not project-scoped), profile, image, volumes, Terraform state, SSH key |
+| Shared host storage | RBD pool and LXD ceph pool `sandbed-dev`, created by `sandbed dev host prepare`, never managed or removed by a lab |
+| Terraform | `terraform/dev-network` (project, bridge, image) and `terraform/dev-manual` (profile, volume, VM), copied per lab |
+| State | `$XDG_STATE_HOME/sandbed/dev`; atomic JSON, per-lab flock, host registry lock, stage attempts with orphan reconciliation |
+| Artifact | frozen git snapshot (snapcraft derives the version from git), `snapcraft pack`, provenance, `snap install --dangerous`, installed squashfs checksum compared with provenance |
+| Guest access | Sunbeam local-access mode: floating IPs are reachable from the lab VM only; no external NIC or LXD bridge. The floating network (`172.16.2.0/24`) is pinned explicitly in the manifest |
+| Failure policy | collect diagnostics, preserve the lab; a failed bootstrap needs a new lab |
+| Public interface | `--json` envelope `schema_version` 1, exit codes 0/2/3/4/5/6/130, `sandbed dev capabilities` interface version |

@@ -14,6 +14,7 @@ storage cluster) and deploys Canonical OpenStack **Sunbeam** onto them.
 - [Shared directory](shared-directory.md) — the `/shared` feature
 - [Hooks](hooks.md) — user hook runners
 - [Cloud-init templating](cloud-init-templating.md) — per-VM cloud-init template overrides
+- [Development labs](development-labs.md) — `sandbed dev`: test a local snap-openstack build in an isolated VM
 - [Testflinger](testflinger.md) — run on a Testflinger-allocated remote node
 - [Reference architecture](reference-architecture.md) — mapping to the Canonical reference arch
 - [Troubleshooting](troubleshooting.md) — common failures and teardown order
