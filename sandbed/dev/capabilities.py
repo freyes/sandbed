@@ -37,11 +37,14 @@ def build_identity() -> dict:
         version = "unknown"
     identity: dict = {"version": version, "git_revision": None, "dirty": None}
     repo = Path(__file__).resolve().parents[2]
-    head = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=False)
-    if head.returncode == 0:
-        identity["git_revision"] = head.stdout.strip()
-        status = run(["git", "-C", str(repo), "status", "--porcelain"], check=False)
-        identity["dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
+    try:
+        head = run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=False)
+        if head.returncode == 0:
+            identity["git_revision"] = head.stdout.strip()
+            status = run(["git", "-C", str(repo), "status", "--porcelain"], check=False)
+            identity["dirty"] = bool(status.stdout.strip()) if status.returncode == 0 else None
+    except (FileNotFoundError, OSError):
+        pass
     return identity
 
 

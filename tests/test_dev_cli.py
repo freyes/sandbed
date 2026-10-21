@@ -31,6 +31,15 @@ def test_capabilities_json(fake_run) -> None:
     assert "capabilities" in payload["commands"]
 
 
+@patch("sandbed.dev.capabilities.run", side_effect=FileNotFoundError("git not found"))
+def test_capabilities_tolerates_missing_git(fake_run) -> None:
+    result = CliRunner().invoke(cli, ["dev", "capabilities", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["sandbed"]["git_revision"] is None
+    assert payload["sandbed"]["dirty"] is None
+
+
 def test_use_testflinger_is_rejected_not_forwarded() -> None:
     result = CliRunner().invoke(cli, ["dev", "--use-testflinger", "capabilities"])
     assert result.exit_code == 2
