@@ -68,24 +68,34 @@ def test_lxd_pool_must_wrap_the_dev_rbd_pool(fake_run, _ic) -> None:
     assert pool.ok is False
 
 
-def _prepare(existing_pools: bool):
+def _prepare(existing_pools: bool, backend: str = "microceph",
+              container: bool = False, driver: str | None = None,
+              source: str | None = None):
     calls: list[list[str]] = []
 
     def fake(cmd, check=True, **_kw):
         calls.append(cmd)
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            if driver is not None:
+                lines = f"driver: {driver}\n"
+                if source:
+                    lines += f"config:\n  source: {source}\n"
+                return _result(0, lines)
+            return _result(0 if existing_pools else 1, "")
         if cmd[:3] == ["sudo", "microceph.rados", "lspools"] and existing_pools:
             return _result(0, "rbd\nsandbed-dev\n")
-        if cmd[:3] == ["lxc", "storage", "show"]:
-            return _result(0 if existing_pools else 1, "")
         return _result(0, "")
 
     with (
         patch("sandbed.dev.host.run", side_effect=fake),
         patch("sandbed.dev.host.check_host", return_value=[]),
         patch("sandbed.dev.host.atomic_write_json"),
+        patch("sandbed.dev.host.in_container", return_value=container),
     ):
-        host.prepare_host("50G")
-    return [" ".join(c) for c in calls]
+        host.prepare_host("50G", backend=backend, source=source)
+    # Drop the initial read-only `lxc storage show` probe used for backend resolution.
+    actionable = [c for c in calls if c[:3] != ["lxc", "storage", "show"]]
+    return [" ".join(c) for c in actionable]
 
 
 def test_prepare_runs_the_script_unchanged_then_creates_the_dev_pools() -> None:
@@ -99,6 +109,112 @@ def test_prepare_runs_the_script_unchanged_then_creates_the_dev_pools() -> None:
 def test_prepare_is_idempotent_when_the_pools_exist() -> None:
     calls = _prepare(existing_pools=True)
     assert not any("pool create" in c or "storage create" in c for c in calls)
+
+
+def test_prepare_dir_fresh_creates_dir_pool_with_source(tmp_path) -> None:
+    source = str(tmp_path / "sbd")
+    tmp_path.joinpath("sbd").mkdir()
+    calls = _prepare(existing_pools=False, backend="dir", container=True, source=source)
+    assert calls[0] == f"sudo env SANDBED_PREP_MICROCEPH=0 {host.PREP_SCRIPT} 50G"
+    assert any(f"storage create sandbed-dev dir source={source}" in c for c in calls)
+    assert not any("microceph" in c or "rados" in c for c in calls)
+    assert not any("lxd init" in c or "disk add" in c for c in calls)
+
+
+def test_prepare_dir_idempotent_when_pool_exists(tmp_path) -> None:
+    source = str(tmp_path / "sbd")
+    tmp_path.joinpath("sbd").mkdir()
+    calls = _prepare(existing_pools=True, backend="dir", container=True,
+                    driver="dir", source=source)
+    assert not any("storage create" in c for c in calls)
+
+
+def test_prepare_dir_vs_existing_ceph_raises_hosterror() -> None:
+    with pytest.raises(HostError, match="never replaced"):
+        _prepare(existing_pools=True, backend="dir", container=False, driver="ceph")
+
+
+def test_prepare_source_with_microceph_raises_inputerror(tmp_path) -> None:
+    source = str(tmp_path / "sbd")
+    tmp_path.joinpath("sbd").mkdir()
+    with pytest.raises(InputError, match="dir backend"):
+        _prepare(existing_pools=False, backend="microceph", container=False, source=source)
+
+
+def test_prepare_source_must_be_absolute_existing_dir() -> None:
+    with pytest.raises(InputError, match="absolute existing directory"):
+        _prepare(existing_pools=False, backend="dir", container=True, source="relative/path")
+    with pytest.raises(InputError, match="absolute existing directory"):
+        _prepare(existing_pools=False, backend="dir", container=True,
+                 source="/nonexistent-dir-xyz")
+
+
+def test_prepare_dir_existing_pool_different_source_raises_hosterror(tmp_path) -> None:
+    source = str(tmp_path / "sbd")
+    tmp_path.joinpath("sbd").mkdir()
+    calls: list[list[str]] = []
+
+    def fake(cmd, check=True, **_kw):
+        calls.append(cmd)
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            return _result(0, "driver: dir\nconfig:\n  source: /old/path\n")
+        return _result(0, "")
+
+    with (
+        patch("sandbed.dev.host.run", side_effect=fake),
+        patch("sandbed.dev.host.check_host", return_value=[]),
+        patch("sandbed.dev.host.atomic_write_json"),
+        patch("sandbed.dev.host.in_container", return_value=True),
+    ):
+        with pytest.raises(HostError, match="never replaced"):
+            host.prepare_host("50G", backend="dir", source=source)
+
+
+def test_prepare_record_contains_backend_and_source_fields(tmp_path) -> None:
+    source = str(tmp_path / "sbd")
+    tmp_path.joinpath("sbd").mkdir()
+    captured: dict = {}
+
+    def fake(cmd, check=True, **_kw):
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            return _result(1, "")
+        return _result(0, "")
+
+    with (
+        patch("sandbed.dev.host.run", side_effect=fake),
+        patch("sandbed.dev.host.check_host", return_value=[]),
+        patch("sandbed.dev.host.atomic_write_json", side_effect=lambda p, d: captured.update(d)),
+        patch("sandbed.dev.host.in_container", return_value=True),
+    ):
+        host.prepare_host("50G", backend="dir", source=source)
+    assert captured["storage_backend"] == "dir"
+    assert captured["storage_source"] == source
+    assert captured["in_container"] is True
+    assert "osd_size" not in captured
+    assert "microceph" not in captured
+
+
+def test_prepare_microceph_record_contains_osd_size_and_microceph() -> None:
+    captured: dict = {}
+
+    def fake(cmd, check=True, **_kw):
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            return _result(1, "")
+        if cmd[:3] == ["sudo", "microceph.rados", "lspools"]:
+            return _result(0, "sandbed-dev\n")
+        return _result(0, "")
+
+    with (
+        patch("sandbed.dev.host.run", side_effect=fake),
+        patch("sandbed.dev.host.check_host", return_value=[]),
+        patch("sandbed.dev.host.atomic_write_json", side_effect=lambda p, d: captured.update(d)),
+        patch("sandbed.dev.host.in_container", return_value=False),
+    ):
+        host.prepare_host("50G")
+    assert captured["storage_backend"] == "microceph"
+    assert captured["osd_size"] == "50G"
+    assert "microceph" in captured
+    assert captured["in_container"] is False
 
 
 # --- resolve_backend ---------------------------------------------------------

@@ -231,29 +231,67 @@ def check_host() -> list[Check]:
     return checks
 
 
-def prepare_host(osd_size: str = DEFAULT_OSD_SIZE) -> dict:
-    """Install and bootstrap the shared backend, then create the dev RBD and LXD pools.
+def prepare_host(
+    osd_size: str = DEFAULT_OSD_SIZE,
+    backend: str = "auto",
+    source: str | None = None,
+) -> dict:
+    """Install and bootstrap the shared backend, then create the dev pools.
 
     Reuses scripts/prep-host.sh unchanged (Testflinger runs it too). Never replaces or wipes a
     healthy existing backend: the script skips bootstrap and disks that already exist.
     """
     if not PREP_SCRIPT.exists():
         raise HostError(f"missing {PREP_SCRIPT}; run from a source checkout")
-    run(["sudo", str(PREP_SCRIPT), osd_size], capture_output=False)
-    if STORAGE_POOL not in _run_out(["sudo", "microceph.rados", "lspools"]).split():
-        run(["sudo", "microceph.ceph", "osd", "pool", "create", STORAGE_POOL])
-        run(["sudo", "microceph.ceph", "osd", "pool", "application", "enable", STORAGE_POOL, "rbd"])
-    if not _run_ok(["lxc", "storage", "show", STORAGE_POOL]):
-        run([
-            "lxc", "storage", "create", STORAGE_POOL, "ceph",
-            f"ceph.osd.pool_name={STORAGE_POOL}", "ceph.cluster_name=ceph", "ceph.user.name=admin",
-        ])
-    record = {
-        "osd_size": osd_size,
+    container = in_container()
+    pool_out = _run_out(["lxc", "storage", "show", STORAGE_POOL])
+    driver = _pool_field(pool_out, "driver")
+    chosen = resolve_backend(backend, driver, container)
+    if source is not None and chosen != "dir":
+        raise InputError("--storage-source requires the dir backend")
+    if source is not None:
+        src_path = Path(source)
+        if not src_path.is_absolute() or not src_path.is_dir():
+            raise InputError(
+                f"--storage-source must be an absolute existing directory: {source}"
+            )
+    if chosen == "microceph":
+        run(["sudo", str(PREP_SCRIPT), osd_size], capture_output=False)
+        if STORAGE_POOL not in _run_out(["sudo", "microceph.rados", "lspools"]).split():
+            run(["sudo", "microceph.ceph", "osd", "pool", "create", STORAGE_POOL])
+            run(["sudo", "microceph.ceph", "osd", "pool", "application", "enable",
+                 STORAGE_POOL, "rbd"])
+        if not _run_ok(["lxc", "storage", "show", STORAGE_POOL]):
+            run([
+                "lxc", "storage", "create", STORAGE_POOL, "ceph",
+                f"ceph.osd.pool_name={STORAGE_POOL}", "ceph.cluster_name=ceph",
+                "ceph.user.name=admin",
+            ])
+    else:  # dir
+        if driver == "dir" and source is not None:
+            existing_source = _pool_field(pool_out, "source")
+            if existing_source is not None and existing_source != source:
+                raise HostError(
+                    f"pool {STORAGE_POOL} exists with source {existing_source}, "
+                    f"requested {source}; it is never replaced"
+                )
+        run(["sudo", "env", "SANDBED_PREP_MICROCEPH=0", str(PREP_SCRIPT), osd_size],
+            capture_output=False)
+        if not _run_ok(["lxc", "storage", "show", STORAGE_POOL]):
+            create_args = ["lxc", "storage", "create", STORAGE_POOL, "dir"]
+            if source:
+                create_args.append(f"source={source}")
+            run(create_args)
+    record: dict = {
+        "storage_backend": chosen,
+        "storage_source": source,
+        "in_container": container,
         "storage_pool": STORAGE_POOL,
         "lxd_version": _run_out(["lxc", "version"]),
-        "microceph": _run_out(["snap", "list", "microceph"]),
     }
+    if chosen == "microceph":
+        record["osd_size"] = osd_size
+        record["microceph"] = _run_out(["snap", "list", "microceph"])
     atomic_write_json(state_root() / "host.json", record)
     failed = [c for c in check_host() if not c.ok]
     if failed:
