@@ -10,10 +10,11 @@ import click
 
 from ..shell import run
 
-INTERFACE_VERSION = 1
+INTERFACE_VERSION = 2
 PROVIDERS = ["manual"]
 PROFILES = ["single-node"]
 SCENARIOS = [{"name": "bootstrap-and-launch", "version": 1}]
+STORAGE_BACKENDS = ["microceph", "dir"]
 
 
 def command_paths(group: click.Group, prefix: str = "") -> list[str]:
@@ -55,5 +56,6 @@ def capabilities(group: click.Group) -> dict:
         "providers": PROVIDERS,
         "profiles": PROFILES,
         "scenarios": SCENARIOS,
+        "storage_backends": STORAGE_BACKENDS,
         "sandbed": build_identity(),
     }

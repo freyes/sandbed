@@ -27,6 +27,7 @@ def test_capabilities_json(fake_run) -> None:
     assert payload["providers"] == ["manual"]
     assert payload["profiles"] == ["single-node"]
     assert payload["scenarios"] == [{"name": "bootstrap-and-launch", "version": 1}]
+    assert payload["storage_backends"] == ["microceph", "dir"]
     assert payload["sandbed"]["git_revision"] == "abc123"
     assert "capabilities" in payload["commands"]
 

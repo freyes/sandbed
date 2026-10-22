@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..shell import run
-from .errors import HostError
+from .errors import HostError, InputError
 from .labs import STORAGE_POOL
 from .paths import state_root
 from .store import atomic_write_json
@@ -21,6 +21,11 @@ from .store import atomic_write_json
 MIN_FREE_GIB = 300  # provisional; calibrate on the qualified host
 PREP_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prep-host.sh"
 DEFAULT_OSD_SIZE = "100G"  # provisional: 3 sparse loop OSDs of this size
+
+# Storage backends `sandbed dev` knows how to provision. `ceph` (MicroCeph) is the canonical
+# choice on a bare host; `dir` is the only viable choice inside an unprivileged container.
+BACKENDS = ("microceph", "dir")
+_DEVLXD = Path("/dev/lxd/sock")  # present inside an LXD container; patchable in tests
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,55 @@ def _run_ok(cmd: list[str]) -> bool:
 def _run_out(cmd: list[str]) -> str:
     result = run(cmd, check=False)
     return (result.stdout or "").strip() if result.returncode == 0 else ""
+
+
+def in_container() -> bool:
+    """True inside an LXD/systemd container. Never raises."""
+    code, out = _probe(["systemd-detect-virt", "--container"])
+    if code == 0 and out and out != "none":
+        return True
+    try:
+        return _DEVLXD.exists()
+    except OSError:
+        return False
+
+
+def pool_driver() -> str | None:
+    """Driver of the shared LXD pool, or None if the pool/command is absent."""
+    out = _out(["lxc", "storage", "show", STORAGE_POOL])
+    if not out:
+        return None
+    for line in out.splitlines():
+        if line.strip().startswith("driver:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def resolve_backend(requested: str, existing_driver: str | None, container: bool) -> str:
+    """Pick the storage backend, refusing to silently replace an incompatible existing pool.
+
+    `requested` may be `auto` (let the environment decide) or one of `BACKENDS`. An existing
+    pool is never replaced: a driver we cannot map, or a mismatch with an explicit request,
+    raises `HostError`. An invalid request raises `InputError`.
+    """
+    if requested not in ("auto", *BACKENDS):
+        raise InputError(f"invalid storage backend: {requested}")
+    if existing_driver is not None:
+        mapped = {"ceph": "microceph", "dir": "dir"}.get(existing_driver)
+        if mapped is None:
+            raise HostError(
+                f"pool {STORAGE_POOL} uses unsupported driver {existing_driver}; "
+                "it is never replaced"
+            )
+        if requested != "auto" and mapped != requested:
+            raise HostError(
+                f"pool {STORAGE_POOL} exists with driver {existing_driver}, "
+                f"requested {requested}; it is never replaced"
+            )
+        return mapped
+    if requested != "auto":
+        return requested
+    return "dir" if container else "microceph"
 
 
 def _nested_kvm() -> tuple[bool, str]:

@@ -3,7 +3,10 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from sandbed.dev import host
+from sandbed.dev.errors import HostError, InputError
 
 
 def _result(code: int = 0, out: str = "") -> MagicMock:
@@ -92,3 +95,79 @@ def test_prepare_runs_the_script_unchanged_then_creates_the_dev_pools() -> None:
 def test_prepare_is_idempotent_when_the_pools_exist() -> None:
     calls = _prepare(existing_pools=True)
     assert not any("pool create" in c or "storage create" in c for c in calls)
+
+
+# --- resolve_backend ---------------------------------------------------------
+
+_RESOLVE_CASES = [
+    (("auto", None, True), "dir"),
+    (("auto", None, False), "microceph"),
+    (("auto", "ceph", True), "microceph"),
+    (("auto", "ceph", False), "microceph"),
+    (("auto", "dir", True), "dir"),
+]
+
+
+@pytest.mark.parametrize("args, expected", _RESOLVE_CASES)
+def test_resolve_backend_picks_the_right_driver(args, expected) -> None:
+    assert host.resolve_backend(*args) == expected
+
+
+@pytest.mark.parametrize(
+    "args, exc, fragment",
+    [
+        (("auto", "zfs", False), HostError, "unsupported driver"),
+        (("dir", "ceph", False), HostError, "never replaced"),
+        (("microceph", "dir", False), HostError, "never replaced"),
+        (("bogus", None, False), InputError, "invalid storage backend"),
+    ],
+)
+def test_resolve_backend_refuses_incompatible_or_invalid(args, exc, fragment) -> None:
+    with pytest.raises(exc) as ei:
+        host.resolve_backend(*args)
+    assert fragment in str(ei.value)
+
+
+# --- in_container -----------------------------------------------------------
+
+
+@patch("sandbed.dev.host._probe", return_value=(0, "lxc"))
+@patch("sandbed.dev.host._DEVLXD")
+def test_in_container_detect_virt_says_lxd(_devlxd, _probe) -> None:
+    assert host.in_container() is True
+    _devlxd.exists.assert_not_called()
+
+
+@patch("sandbed.dev.host._probe", return_value=(0, "none"))
+@patch("sandbed.dev.host._DEVLXD")
+def test_in_container_detect_virt_none_and_no_sock(devlxd, _probe) -> None:
+    devlxd.exists.return_value = False
+    assert host.in_container() is False
+
+
+@patch("sandbed.dev.host._probe", return_value=(127, ""))
+@patch("sandbed.dev.host._DEVLXD")
+def test_in_container_missing_detect_virt_but_sock_present(devlxd, _probe) -> None:
+    devlxd.exists.return_value = True
+    assert host.in_container() is True
+
+
+@patch("sandbed.dev.host._probe", return_value=(127, ""))
+@patch("sandbed.dev.host._DEVLXD")
+def test_in_container_missing_detect_virt_and_no_sock(devlxd, _probe) -> None:
+    devlxd.exists.return_value = False
+    assert host.in_container() is False
+
+
+# --- pool_driver ------------------------------------------------------------
+
+
+@patch("sandbed.dev.host._out")
+def test_pool_driver_parses_driver_line(fake_out) -> None:
+    fake_out.return_value = "driver: ceph\nconfig:\n  ceph.osd.pool_name: rbd"
+    assert host.pool_driver() == "ceph"
+
+
+@patch("sandbed.dev.host._out", return_value="")
+def test_pool_driver_none_when_pool_absent(_fake_out) -> None:
+    assert host.pool_driver() is None

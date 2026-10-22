@@ -11,11 +11,14 @@ CLI. Your job is to call it, read its JSON, and report honestly.
 
 ## Before you start
 
-1. Run `sandbed dev capabilities --json`. Continue only if `interface_version` is `1` and the
+1. Run `sandbed dev capabilities --json`. Continue only if `interface_version` is `2` and the
    `commands`, `profiles` (`single-node`) and `scenarios` (`bootstrap-and-launch`) you need are
    listed. Otherwise stop and tell the user the installed sandbed is incompatible.
 2. Run `sandbed dev host check --json`. If `ok` is false, report the failed checks and their
    `remediation` and stop. Never run `sandbed dev host prepare` unless the user asked for it.
+   If `host check` reports `storage_backend: dir` and `in_container: true`, failed `vm-devices`
+   or `lxd-vm` checks need the outer LXD admin to pass through KVM, vhost, and TUN devices; report
+   their `remediation` verbatim to the user.
 3. Read the target checkout's `AGENTS.md`, contribution guide and the code and tests you
    touch. Work in an isolated git worktree and run the project's fast checks before building.
 
