@@ -18,13 +18,77 @@ sandbed dev host check --json     # read-only
 sandbed dev host prepare          # explicit, idempotent, never wipes a healthy backend
 ```
 
-`prepare` runs `scripts/prep-host.sh` (LXD, MicroCeph, uv, Terraform, loop OSDs) and then creates
-the shared RBD pool and LXD pool `sandbed-dev`. Those belong to the host: lab teardown never
-removes them. Also needed: `snapcraft`, `squashfs-tools`, KVM with nested virtualization, and
-free disk (300 GiB is the provisional threshold).
+`prepare` provisions the shared LXD storage pool `sandbed-dev` that every lab draws from. That
+pool belongs to the host: lab teardown never removes it. Two storage backends are supported,
+selected by `--storage-backend auto|microceph|dir` (default `auto`):
+
+- **microceph** (the default on bare metal): `prepare` runs `scripts/prep-host.sh`, which installs
+  LXD, MicroCeph, uv and Terraform and adds loop-backed OSDs, then creates the shared RBD pool and
+  the LXD `ceph` pool `sandbed-dev`. This is today's behaviour on a dedicated Ubuntu host.
+- **dir** (auto-selected inside an LXD container): `prepare` runs `prep-host.sh` with
+  `SANDBED_PREP_MICROCEPH=0` so MicroCeph is skipped, then creates an LXD `dir` pool named
+  `sandbed-dev`, optionally rooted at `--storage-source PATH`. The source directory must be empty
+  (LXD requires this for `lxc storage create ... dir source=...`).
+
+`auto` resolves the backend in this order: if a `sandbed-dev` pool already exists, its driver wins
+(`ceph` maps to microceph, `dir` maps to dir); otherwise, if `systemd-detect-virt --container`
+reports a container, `dir` is chosen; otherwise `microceph`. An existing `sandbed-dev` pool is
+never replaced: if the resolved backend's driver disagrees with the existing pool's driver,
+`prepare` fails with a clear error rather than wiping the pool.
+
+`SANDBED_PREP_MICROCEPH=0` is the env var `prep-host.sh` reads to skip the MicroCeph snap install,
+the bootstrap and the loop OSD setup. `prepare` sets it automatically for the `dir` backend; you
+can also export it yourself when invoking the script directly.
+
+Also needed regardless of backend: `snapcraft`, `squashfs-tools`, KVM with nested virtualization,
+and free disk (300 GiB is the provisional threshold).
 
 Provisional sizing per lab: 8 vCPU, 32 GiB RAM, 100 GiB root, 50 GiB storage disk. Calibrate
 before relying on it.
+
+### Running inside an LXD container
+
+`sandbed dev` can run inside an LXD container on a shared hypervisor, where loop devices and the
+kernel RBD module are unavailable. The `dir` backend handles this case. The outer container needs
+nesting enabled and the KVM, vhost and TUN device nodes passed through. From the host:
+
+```bash
+lxc config set <c> security.nesting=true
+lxc config device add <c> kvm unix-char source=/dev/kvm
+lxc config device add <c> vhost-net unix-char source=/dev/vhost-net
+lxc config device add <c> vhost-vsock unix-char source=/dev/vhost-vsock
+lxc config device add <c> tun unix-char source=/dev/net/tun
+# optional, recommended: dedicated outer volume for the nested pool
+lxc storage volume create <outer-pool> <c>-sandbed-dev size=400GiB
+lxc config device add <c> sandbed-dev disk pool=<outer-pool> source=<c>-sandbed-dev path=/srv/sandbed-dev
+# inside the container
+sandbed dev host prepare --storage-source /srv/sandbed-dev
+```
+
+Passing `/dev/kvm`, `/dev/vhost-net`, `/dev/vhost-vsock` and `/dev/net/tun` weakens container
+isolation. These devices aren't namespaced: the container shares the host's KVM, vhost and TUN
+subsystems with everything else running there. That's the outer admin's call to make, not
+sandbed's. `host check --json` reports `in_container: true` and lists any missing device under
+`vm-devices` with the exact `lxc config device add` remediation.
+
+#### Why not ZFS delegation or loop devices
+
+`zfs.delegate` (LXD 5.17+, ZFS 2.2+) delegates ZFS datasets to a container, which works for
+nested containers. It doesn't work for nested VMs: zvols (block devices) aren't namespaced, so the
+container can't own them and nested VMs fail with "Could not locate a zvol" (lxc/incus#739).
+`zfs.delegate` is therefore not the mechanism sandbed uses for in-container storage.
+
+LXD's `ceph` driver maps RBD images through krbd, the kernel RBD module, which isn't usable inside
+a container. So even with loop devices passed through, a MicroCeph-backed LXD pool can't serve VMs
+in a container.
+
+The `dir` driver stores VM root disks and `content_type=block` volumes as raw files that qemu
+opens directly. No kernel block subsystem is involved, so it works inside a container. That's why
+`dir` is the in-container backend.
+
+Loop-device passthrough is possible but fragile: loop devices are global kernel resources, not
+namespaced, so two containers competing for the same minor number corrupt each other. It isn't
+worth the fragility when `dir` already works.
 
 ## Commands
 
