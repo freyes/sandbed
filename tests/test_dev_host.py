@@ -19,9 +19,10 @@ def _proc(code: int = 0, out: str = "") -> MagicMock:
     return MagicMock(returncode=code, stdout=out)
 
 
+@patch("sandbed.dev.host.in_container", return_value=False)
 @patch("sandbed.dev.host.shutil.disk_usage")
 @patch("sandbed.dev.host.subprocess.run")
-def test_check_host_is_read_only_and_reports_every_failure(fake_run, usage) -> None:
+def test_check_host_is_read_only_and_reports_every_failure(fake_run, usage, _ic) -> None:
     usage.return_value = MagicMock(free=10 << 30)
     fake_run.return_value = _proc(1)
     checks = host.check_host()
@@ -33,9 +34,10 @@ def test_check_host_is_read_only_and_reports_every_failure(fake_run, usage) -> N
         assert not verbs & set(call.args[0]), call.args[0]
 
 
+@patch("sandbed.dev.host.in_container", return_value=False)
 @patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
 @patch("sandbed.dev.host.subprocess.run")
-def test_checks_never_prompt_and_never_hang(fake_run, _usage) -> None:
+def test_checks_never_prompt_and_never_hang(fake_run, _usage, _ic) -> None:
     fake_run.side_effect = subprocess.TimeoutExpired(cmd="x", timeout=30)
     checks = host.check_host()  # must return, not raise
     assert not any(c.ok for c in checks if c.name in ("sudo", "lxd", "microceph", "terraform"))
@@ -46,14 +48,16 @@ def test_checks_never_prompt_and_never_hang(fake_run, _usage) -> None:
             assert argv[1] == "-n", argv
 
 
+@patch("sandbed.dev.host.in_container", return_value=False)
 @patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
 @patch("sandbed.dev.host.subprocess.run", side_effect=FileNotFoundError)
-def test_missing_programs_are_failed_checks_not_crashes(_run, _usage) -> None:
+def test_missing_programs_are_failed_checks_not_crashes(_run, _usage, _ic) -> None:
     assert [c for c in host.check_host() if c.name == "terraform"][0].ok is False
 
 
+@patch("sandbed.dev.host.in_container", return_value=False)
 @patch("sandbed.dev.host.subprocess.run")
-def test_lxd_pool_must_wrap_the_dev_rbd_pool(fake_run) -> None:
+def test_lxd_pool_must_wrap_the_dev_rbd_pool(fake_run, _ic) -> None:
     def fake(cmd, **_kw):
         if cmd[:3] == ["lxc", "storage", "show"]:
             return _proc(0, "driver: ceph\nconfig:\n  ceph.osd.pool_name: rbd\n")
@@ -171,3 +175,119 @@ def test_pool_driver_parses_driver_line(fake_out) -> None:
 @patch("sandbed.dev.host._out", return_value="")
 def test_pool_driver_none_when_pool_absent(_fake_out) -> None:
     assert host.pool_driver() is None
+
+
+# --- check_host: bare-metal name list ----------------------------------------
+
+
+_BARE_METAL_NAMES = [
+    "sudo", "kvm", "nested-virt", "lxd",
+    "microceph", "ceph-osd-up", "rbd-pool", "lxd-pool",
+    "terraform", "snapcraft", "squashfs-tools", "disk",
+]
+
+
+@patch("sandbed.dev.host.in_container", return_value=False)
+@patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
+@patch("sandbed.dev.host.subprocess.run", return_value=_proc(1))
+def test_bare_metal_check_names_match_today(_run, _usage, _ic) -> None:
+    names = [c.name for c in host.check_host()]
+    assert names == _BARE_METAL_NAMES
+
+
+# --- check_host: container mode ----------------------------------------------
+
+
+@patch("sandbed.dev.host.in_container", return_value=True)
+@patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
+@patch("sandbed.dev.host.subprocess.run", return_value=_proc(1))
+def test_container_mode_adds_vm_checks_and_drops_microceph(_run, _usage, _ic) -> None:
+    names = [c.name for c in host.check_host()]
+    assert "vm-devices" in names and "lxd-vm" in names
+    assert "microceph" not in names
+    assert "rbd-pool" not in names
+    assert "ceph-osd-up" not in names
+
+
+@patch("sandbed.dev.host.socket.gethostname", return_value="myhost")
+@patch("sandbed.dev.host.in_container", return_value=True)
+@patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
+@patch("sandbed.dev.host.subprocess.run", return_value=_proc(1))
+def test_vm_devices_remediation_uses_hostname(_run, _usage, _ic, _hn) -> None:
+    vm = next(c for c in host.check_host() if c.name == "vm-devices")
+    assert "lxc config device add myhost kvm unix-char source=/dev/kvm" in vm.remediation
+    assert "lxc config set myhost security.nesting=true" in vm.remediation
+
+
+@patch("sandbed.dev.host.in_container", return_value=True)
+@patch("sandbed.dev.host.shutil.disk_usage")
+@patch("sandbed.dev.host.subprocess.run")
+def test_container_mode_is_read_only_no_forbidden_verbs(fake_run, usage, _ic) -> None:
+    usage.return_value = MagicMock(free=10 << 30)
+    fake_run.return_value = _proc(1)
+    host.check_host()
+    verbs = {"install", "create", "init", "bootstrap", "add", "enable", "delete"}
+    for call in fake_run.call_args_list:
+        assert not verbs & set(call.args[0]), call.args[0]
+
+
+@patch("sandbed.dev.host.in_container", return_value=True)
+@patch("sandbed.dev.host.shutil.disk_usage")
+@patch("sandbed.dev.host.subprocess.run")
+def test_dir_pool_source_used_for_disk_check(fake_run, usage, _ic) -> None:
+    usage.return_value = MagicMock(free=400 << 30)
+
+    def fake(cmd, **_kw):
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            return _proc(0, "driver: dir\nconfig:\n  source: /srv/sbd\n")
+        return _proc(1)
+
+    fake_run.side_effect = fake
+    host.check_host()
+    usage.assert_called_with("/srv/sbd")
+
+
+@patch("sandbed.dev.host.in_container", return_value=False)
+@patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
+@patch("sandbed.dev.host.subprocess.run")
+def test_zfs_pool_is_unsupported_driver(fake_run, _usage, _ic) -> None:
+    def fake(cmd, **_kw):
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            return _proc(0, "driver: zfs\n")
+        return _proc(1)
+
+    fake_run.side_effect = fake
+    pool = next(c for c in host.check_host() if c.name == "lxd-pool")
+    assert pool.ok is False
+    assert "unsupported driver zfs" in pool.detail
+
+
+# --- host_facts / checks_payload ---------------------------------------------
+
+
+@patch("sandbed.dev.host.in_container", return_value=True)
+@patch("sandbed.dev.host.pool_driver", return_value=None)
+def test_host_facts_container_no_pool(_pd, _ic) -> None:
+    assert host.host_facts() == {"storage_backend": "dir", "in_container": True}
+
+
+@patch("sandbed.dev.host.in_container", return_value=False)
+@patch("sandbed.dev.host.pool_driver", return_value="ceph")
+def test_host_facts_bare_metal_ceph(_pd, _ic) -> None:
+    assert host.host_facts() == {"storage_backend": "microceph", "in_container": False}
+
+
+@patch("sandbed.dev.host.in_container", return_value=False)
+@patch("sandbed.dev.host.pool_driver", return_value="zfs")
+def test_host_facts_unsupported_driver(_pd, _ic) -> None:
+    assert host.host_facts() == {"storage_backend": "unsupported", "in_container": False}
+
+
+@patch("sandbed.dev.host.host_facts",
+       return_value={"storage_backend": "dir", "in_container": True})
+def test_checks_payload_includes_host_facts(_hf) -> None:
+    payload = host.checks_payload([])
+    assert payload["storage_backend"] == "dir"
+    assert payload["in_container"] is True
+    assert payload["ok"] is True
+    assert payload["checks"] == []

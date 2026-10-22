@@ -6,8 +6,10 @@ The shared backend (MicroCeph, the RBD pool and the LXD pool wrapper over it) be
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import socket
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -131,27 +133,92 @@ def _nested_kvm() -> tuple[bool, str]:
     return False, "no kvm_intel/kvm_amd module parameters"
 
 
+def _pool_field(out: str, field: str) -> str | None:
+    """Parse a `field:` value from `lxc storage show` output (one call, multiple fields)."""
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{field}:"):
+            return stripped.split(":", 1)[1].strip()
+    return None
+
+
 def check_host() -> list[Check]:
     """Read-only. Never installs, creates or deletes anything."""
+    container = in_container()
+    pool_out = _out(["lxc", "storage", "show", STORAGE_POOL])
+    driver = _pool_field(pool_out, "driver")
+    try:
+        backend = resolve_backend("auto", driver, container)
+    except HostError:
+        backend = "unsupported"
     nested_ok, nested_detail = _nested_kvm()
-    free_gib = shutil.disk_usage("/var/snap" if os.path.isdir("/var/snap") else "/").free >> 30
     lxd_ok = _ok(["lxc", "query", "/1.0"])
-    pool = _out(["lxc", "storage", "show", STORAGE_POOL])
-    rbd = _out(["sudo", "microceph.rados", "lspools"]).split()
-    osd = _out(["sudo", "microceph.ceph", "osd", "stat"])
-    return [
+
+    checks: list[Check] = [
         Check("sudo", _ok(["sudo", "true"]), "sudo -n true",
               "run `sudo -v` first or allow passwordless sudo for the MicroCeph commands"),
         Check("kvm", os.path.exists("/dev/kvm"), "/dev/kvm", "enable KVM on the host"),
         Check("nested-virt", nested_ok, nested_detail, "enable nested virtualization"),
         Check("lxd", lxd_ok, "lxc query /1.0", "run `sandbed dev host prepare`"),
-        Check("microceph", _ok(["sudo", "microceph", "cluster", "list"]), "cluster list",
-              "run `sandbed dev host prepare`"),
-        Check("ceph-osd-up", " up " in osd, osd or "no output", "run `sandbed dev host prepare`"),
-        Check("rbd-pool", STORAGE_POOL in rbd, f"rados pool {STORAGE_POOL}",
-              "run `sandbed dev host prepare`"),
-        Check("lxd-pool", "driver: ceph" in pool and f"ceph.osd.pool_name: {STORAGE_POOL}" in pool,
-              f"lxc storage show {STORAGE_POOL}", "run `sandbed dev host prepare`"),
+    ]
+
+    if backend == "microceph":
+        rbd = _out(["sudo", "microceph.rados", "lspools"]).split()
+        osd = _out(["sudo", "microceph.ceph", "osd", "stat"])
+        checks.extend([
+            Check("microceph", _ok(["sudo", "microceph", "cluster", "list"]), "cluster list",
+                  "run `sandbed dev host prepare`"),
+            Check("ceph-osd-up", " up " in osd, osd or "no output",
+                  "run `sandbed dev host prepare`"),
+            Check("rbd-pool", STORAGE_POOL in rbd, f"rados pool {STORAGE_POOL}",
+                  "run `sandbed dev host prepare`"),
+            Check("lxd-pool",
+                  "driver: ceph" in pool_out and f"ceph.osd.pool_name: {STORAGE_POOL}" in pool_out,
+                  f"lxc storage show {STORAGE_POOL}", "run `sandbed dev host prepare`"),
+        ])
+    elif backend == "dir":
+        checks.append(
+            Check("lxd-pool", driver == "dir", f"lxc storage show {STORAGE_POOL}",
+                  "run `sandbed dev host prepare`")
+        )
+    else:  # unsupported
+        checks.append(
+            Check("lxd-pool", False, f"unsupported driver {driver}",
+                  "remove or rename the pool; sandbed never replaces it")
+        )
+
+    if container:
+        hostname = socket.gethostname()
+        devices = ("/dev/kvm", "/dev/vhost-net", "/dev/vhost-vsock", "/dev/net/tun")
+        missing = [d for d in devices if not os.path.exists(d)]
+        checks.append(Check(
+            "vm-devices", not missing,
+            "missing: " + ", ".join(missing) if missing else "all present",
+            f"pass through KVM/vhost/TUN devices: "
+            f"`lxc config set {hostname} security.nesting=true; "
+            f"lxc config device add {hostname} kvm unix-char source=/dev/kvm; "
+            f"lxc config device add {hostname} vhost-net unix-char source=/dev/vhost-net; "
+            f"lxc config device add {hostname} vhost-vsock unix-char source=/dev/vhost-vsock; "
+            f"lxc config device add {hostname} tun unix-char source=/dev/net/tun`",
+        ))
+        try:
+            env = json.loads(_out(["lxc", "query", "/1.0"]))
+        except (json.JSONDecodeError, ValueError):
+            env = {}
+        lxd_driver = env.get("environment", {}).get("driver", "")
+        checks.append(Check(
+            "lxd-vm", "qemu" in lxd_driver,
+            f"environment.driver: {lxd_driver}" if lxd_driver else "no output",
+            "LXD must support VMs (qemu driver): check `lxc query /1.0` environment.driver",
+        ))
+
+    if backend == "dir" and driver is not None:
+        source_path = _pool_field(pool_out, "source")
+        disk_path = source_path or ("/var/snap" if os.path.isdir("/var/snap") else "/")
+    else:
+        disk_path = "/var/snap" if os.path.isdir("/var/snap") else "/"
+    free_gib = shutil.disk_usage(disk_path).free >> 30
+    checks.extend([
         Check("terraform", _ok(["terraform", "version"]), "terraform version",
               "snap install terraform --classic"),
         Check("snapcraft", _ok(["snapcraft", "--version"]), "snapcraft --version",
@@ -160,7 +227,8 @@ def check_host() -> list[Check]:
               "apt install squashfs-tools"),
         Check("disk", free_gib >= MIN_FREE_GIB, f"{free_gib} GiB free (need {MIN_FREE_GIB})",
               "free disk space"),
-    ]
+    ])
+    return checks
 
 
 def prepare_host(osd_size: str = DEFAULT_OSD_SIZE) -> dict:
@@ -193,5 +261,17 @@ def prepare_host(osd_size: str = DEFAULT_OSD_SIZE) -> dict:
     return record
 
 
+def host_facts() -> dict:
+    """Re-probe the host for the two facts that appear in the JSON payload."""
+    container = in_container()
+    driver = pool_driver()
+    try:
+        backend = resolve_backend("auto", driver, container)
+    except HostError:
+        backend = "unsupported"
+    return {"storage_backend": backend, "in_container": container}
+
+
 def checks_payload(checks: list[Check]) -> dict:
-    return {"ok": all(c.ok for c in checks), "checks": [asdict(c) for c in checks]}
+    return {"ok": all(c.ok for c in checks), "checks": [asdict(c) for c in checks],
+            **host_facts()}
