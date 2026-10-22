@@ -54,8 +54,13 @@ def host_check() -> dict:
             "exit_code": 0 if payload["ok"] else 3, **payload}
 
 
-def host_prepare(osd_size: str) -> dict:
-    return {"host": prepare_host(osd_size), "human": "host prepared"}
+def host_prepare(
+    osd_size: str, storage_backend: str, storage_source: str | None,
+) -> dict:
+    return {
+        "host": prepare_host(osd_size, backend=storage_backend, source=storage_source),
+        "human": "host prepared",
+    }
 
 
 def create(label: str, *, provider: str, profile: str, overrides: dict) -> dict:

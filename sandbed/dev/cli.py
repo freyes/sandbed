@@ -85,11 +85,22 @@ def host_check(json_mode: bool) -> None:
 
 
 @host.command("prepare", context_settings=CONTEXT_SETTINGS)
-@click.option("--osd-size", default="100G", show_default=True)
+@click.option("--osd-size", default="100G", show_default=True, help="microceph backend only")
+@click.option(
+    "--storage-backend", type=click.Choice(["auto", "microceph", "dir"]), default="auto",
+    show_default=True,
+)
+@click.option(
+    "--storage-source", type=click.Path(file_okay=False), default=None,
+    help="dir backend: existing empty directory for the pool",
+)
 @json_option
-def host_prepare(osd_size: str, json_mode: bool) -> None:
-    """Install and configure shared LXD/MicroCeph storage (never wipes a healthy backend)."""
-    execute("host prepare", json_mode, lambda: commands.host_prepare(osd_size))
+def host_prepare(osd_size: str, storage_backend: str, storage_source: str | None,
+                 json_mode: bool) -> None:
+    """Install and configure the shared LXD storage pool (MicroCeph or dir; never wipes a
+    healthy backend)."""
+    execute("host prepare", json_mode,
+            lambda: commands.host_prepare(osd_size, storage_backend, storage_source))
 
 
 @dev.command("create", context_settings=CONTEXT_SETTINGS)
