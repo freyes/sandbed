@@ -7,11 +7,6 @@ variable "mgmt_cidr" {
   type = string
 }
 
-variable "ubuntu_image_remote" {
-  type    = string
-  default = "ubuntu"
-}
-
 variable "ubuntu_image_alias" {
   type    = string
   default = "26.04"

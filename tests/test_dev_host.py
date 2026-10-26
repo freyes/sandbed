@@ -19,6 +19,9 @@ def _proc(code: int = 0, out: str = "") -> MagicMock:
     return MagicMock(returncode=code, stdout=out)
 
 
+_IMAGE_SHOW = "type: virtual-machine\narchitecture: x86_64\nfingerprint: imgfp123\n"
+
+
 @patch("sandbed.dev.host.in_container", return_value=False)
 @patch("sandbed.dev.host.shutil.disk_usage")
 @patch("sandbed.dev.host.subprocess.run")
@@ -70,7 +73,7 @@ def test_lxd_pool_must_wrap_the_dev_rbd_pool(fake_run, _ic) -> None:
 
 def _prepare(existing_pools: bool, backend: str = "microceph",
               container: bool = False, driver: str | None = None,
-              source: str | None = None):
+              source: str | None = None, free_gib: int = 400):
     calls: list[list[str]] = []
 
     def fake(cmd, check=True, **_kw):
@@ -84,6 +87,8 @@ def _prepare(existing_pools: bool, backend: str = "microceph",
             return _result(0 if existing_pools else 1, "")
         if cmd[:3] == ["sudo", "microceph.rados", "lspools"] and existing_pools:
             return _result(0, "rbd\nsandbed-dev\n")
+        if cmd[:3] == ["lxc", "image", "show"]:
+            return _result(0, _IMAGE_SHOW)
         return _result(0, "")
 
     with (
@@ -91,6 +96,7 @@ def _prepare(existing_pools: bool, backend: str = "microceph",
         patch("sandbed.dev.host.check_host", return_value=[]),
         patch("sandbed.dev.host.atomic_write_json"),
         patch("sandbed.dev.host.in_container", return_value=container),
+        patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=free_gib << 30)),
     ):
         host.prepare_host("50G", backend=backend, source=source)
     # Drop the initial read-only `lxc storage show` probe used for backend resolution.
@@ -178,6 +184,8 @@ def test_prepare_record_contains_backend_and_source_fields(tmp_path) -> None:
     def fake(cmd, check=True, **_kw):
         if cmd[:3] == ["lxc", "storage", "show"]:
             return _result(1, "")
+        if cmd[:3] == ["lxc", "image", "show"]:
+            return _result(0, _IMAGE_SHOW)
         return _result(0, "")
 
     with (
@@ -185,6 +193,7 @@ def test_prepare_record_contains_backend_and_source_fields(tmp_path) -> None:
         patch("sandbed.dev.host.check_host", return_value=[]),
         patch("sandbed.dev.host.atomic_write_json", side_effect=lambda p, d: captured.update(d)),
         patch("sandbed.dev.host.in_container", return_value=True),
+        patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=400 << 30)),
     ):
         host.prepare_host("50G", backend="dir", source=source)
     assert captured["storage_backend"] == "dir"
@@ -202,6 +211,8 @@ def test_prepare_microceph_record_contains_osd_size_and_microceph() -> None:
             return _result(1, "")
         if cmd[:3] == ["sudo", "microceph.rados", "lspools"]:
             return _result(0, "sandbed-dev\n")
+        if cmd[:3] == ["lxc", "image", "show"]:
+            return _result(0, _IMAGE_SHOW)
         return _result(0, "")
 
     with (
@@ -215,6 +226,66 @@ def test_prepare_microceph_record_contains_osd_size_and_microceph() -> None:
     assert captured["osd_size"] == "50G"
     assert "microceph" in captured
     assert captured["in_container"] is False
+
+
+def test_prepare_imports_the_pinned_image_once_and_records_it() -> None:
+    calls: list[list[str]] = []
+    captured: dict = {}
+    shows = 0
+
+    def fake(cmd, check=True, **_kw):
+        nonlocal shows
+        calls.append(cmd)
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            return _result(1, "")
+        if cmd[:3] == ["sudo", "microceph.rados", "lspools"]:
+            return _result(0, "sandbed-dev\n")
+        if cmd[:3] == ["lxc", "image", "show"]:
+            shows += 1
+            return _result(0, _IMAGE_SHOW) if shows > 1 else _result(1, "")
+        return _result(0, "")
+
+    with (
+        patch("sandbed.dev.host.run", side_effect=fake),
+        patch("sandbed.dev.host.check_host", return_value=[]),
+        patch("sandbed.dev.host.atomic_write_json", side_effect=lambda p, d: captured.update(d)),
+        patch("sandbed.dev.host.in_container", return_value=False),
+    ):
+        host.prepare_host("50G")
+    copied = [c for c in calls if c[:3] == ["lxc", "image", "copy"]]
+    assert copied == [["lxc", "image", "copy", "ubuntu:26.04/cloud", "local:", "--alias", "26.04"]]
+    assert captured["image_remote"] == "ubuntu"
+    assert captured["image_alias"] == "26.04"
+    assert captured["image_fingerprint"] == "imgfp123"
+
+
+def test_prepare_does_not_reimport_when_the_image_is_present() -> None:
+    calls = _prepare(existing_pools=True)
+    assert not any("image copy" in c for c in calls)
+    assert any("image show" in c for c in calls)
+
+
+def test_prepare_rejects_a_staged_image_of_the_wrong_type() -> None:
+    calls: list[list[str]] = []
+
+    def fake(cmd, check=True, **_kw):
+        calls.append(cmd)
+        if cmd[:3] == ["lxc", "storage", "show"]:
+            return _result(1, "")
+        if cmd[:3] == ["sudo", "microceph.rados", "lspools"]:
+            return _result(0, "sandbed-dev\n")
+        if cmd[:3] == ["lxc", "image", "show"]:
+            return _result(0, "type: container\narchitecture: x86_64\n")
+        return _result(0, "")
+
+    with (
+        patch("sandbed.dev.host.run", side_effect=fake),
+        patch("sandbed.dev.host.check_host", return_value=[]),
+        patch("sandbed.dev.host.atomic_write_json"),
+        patch("sandbed.dev.host.in_container", return_value=False),
+    ):
+        with pytest.raises(HostError, match="virtual-machine"):
+            host.prepare_host("50G")
 
 
 # --- resolve_backend ---------------------------------------------------------
@@ -299,6 +370,7 @@ def test_pool_driver_none_when_pool_absent(_fake_out) -> None:
 _BARE_METAL_NAMES = [
     "sudo", "kvm", "nested-virt", "lxd",
     "microceph", "ceph-osd-up", "rbd-pool", "lxd-pool",
+    "image",
     "terraform", "snapcraft", "squashfs-tools", "disk",
 ]
 
@@ -309,6 +381,26 @@ _BARE_METAL_NAMES = [
 def test_bare_metal_check_names_match_today(_run, _usage, _ic) -> None:
     names = [c.name for c in host.check_host()]
     assert names == _BARE_METAL_NAMES
+
+
+@patch("sandbed.dev.host.in_container", return_value=False)
+@patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
+@patch("sandbed.dev.host.subprocess.run")
+def test_image_check_reports_presence_and_absence(fake_run, _usage, _ic) -> None:
+    def present(cmd, **_kw):
+        if cmd[:3] == ["lxc", "image", "show"]:
+            return _proc(0, _IMAGE_SHOW)
+        return _proc(1)
+
+    fake_run.side_effect = present
+    check = next(c for c in host.check_host() if c.name == "image")
+    assert check.ok is True
+    assert "host prepare" in check.remediation
+
+    fake_run.side_effect = lambda cmd, **_kw: _proc(1)
+    check = next(c for c in host.check_host() if c.name == "image")
+    assert check.ok is False
+    assert "host prepare" in check.remediation
 
 
 # --- check_host: container mode ----------------------------------------------
@@ -407,3 +499,70 @@ def test_checks_payload_includes_host_facts(_hf) -> None:
     assert payload["in_container"] is True
     assert payload["ok"] is True
     assert payload["checks"] == []
+
+# --- dir pre-flight and lxd-vm remediation -----------------------------------
+
+
+def test_prepare_dir_refuses_small_target_before_changing_anything(tmp_path) -> None:
+    calls: list[list[str]] = []
+
+    def fake(cmd, check=True, **_kw):
+        calls.append(cmd)
+        return _result(1, "")
+
+    with (
+        patch("sandbed.dev.host.run", side_effect=fake),
+        patch("sandbed.dev.host.atomic_write_json") as write,
+        patch("sandbed.dev.host.in_container", return_value=True),
+        patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=28 << 30)),
+    ):
+        with pytest.raises(HostError, match="28 GiB free.*--storage-source"):
+            host.prepare_host("50G", backend="auto", source=str(tmp_path))
+    assert calls == [["lxc", "storage", "show", host.STORAGE_POOL]]
+    write.assert_not_called()
+
+
+def test_prepare_dir_preflight_measures_lxd_dir_without_source() -> None:
+    with (
+        patch("sandbed.dev.host.run", return_value=_result(1, "")),
+        patch("sandbed.dev.host.in_container", return_value=True),
+        patch("sandbed.dev.host.os.path.isdir", return_value=True),
+        patch("sandbed.dev.host.shutil.disk_usage",
+              return_value=MagicMock(free=10 << 30)) as usage,
+    ):
+        with pytest.raises(HostError):
+            host.prepare_host("50G")
+    usage.assert_called_once_with(host.LXD_DIR)
+
+
+def test_prepare_dir_existing_pool_skips_preflight() -> None:
+    calls = _prepare(existing_pools=True, backend="dir", container=True, driver="dir",
+                     free_gib=1)
+    assert not any("storage create" in c for c in calls)
+
+
+def _lxd_vm(devices_present: bool) -> host.Check:
+    def fake(cmd, **_kw):
+        if cmd[:3] == ["lxc", "query", "/1.0"]:
+            return _proc(0, '{"environment": {"driver": "lxc"}}')
+        return _proc(1)
+
+    with (
+        patch("sandbed.dev.host.subprocess.run", side_effect=fake),
+        patch("sandbed.dev.host.in_container", return_value=True),
+        patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=400 << 30)),
+        patch("sandbed.dev.host.os.path.exists", return_value=devices_present),
+    ):
+        return next(c for c in host.check_host() if c.name == "lxd-vm")
+
+
+def test_lxd_vm_remediation_says_reload_when_devices_arrived_after_start() -> None:
+    check = _lxd_vm(devices_present=True)
+    assert check.ok is False
+    assert check.remediation.startswith("LXD started before the KVM devices existed")
+    assert "sudo systemctl reload snap.lxd.daemon" in check.remediation
+
+
+def test_lxd_vm_remediation_points_at_devices_when_missing() -> None:
+    check = _lxd_vm(devices_present=False)
+    assert check.remediation.startswith("pass through the vm-devices first")

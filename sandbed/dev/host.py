@@ -16,11 +16,11 @@ from pathlib import Path
 
 from ..shell import run
 from .errors import HostError, InputError
-from .labs import STORAGE_POOL
+from .labs import IMAGE, STORAGE_POOL
 from .paths import state_root
 from .store import atomic_write_json
 
-MIN_FREE_GIB = 300  # provisional; calibrate on the qualified host
+MIN_FREE_GIB = 50  # provisional; calibrate on the qualified host
 PREP_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prep-host.sh"
 DEFAULT_OSD_SIZE = "100G"  # provisional: 3 sparse loop OSDs of this size
 
@@ -28,6 +28,7 @@ DEFAULT_OSD_SIZE = "100G"  # provisional: 3 sparse loop OSDs of this size
 # choice on a bare host; `dir` is the only viable choice inside an unprivileged container.
 BACKENDS = ("microceph", "dir")
 _DEVLXD = Path("/dev/lxd/sock")  # present inside an LXD container; patchable in tests
+LXD_DIR = "/var/snap/lxd/common/lxd"  # where LXD puts a dir pool created without `source`
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,22 @@ def pool_driver() -> str | None:
         if line.strip().startswith("driver:"):
             return line.split(":", 1)[1].strip()
     return None
+
+
+def _image_field(out: str, field: str) -> str | None:
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{field}:"):
+            return stripped.split(":", 1)[1].strip()
+    return None
+
+
+def image_imported() -> bool:
+    """Read-only: the pinned VM image resolves locally in LXD's default project.
+
+    No network fetch: `lxc image show` resolves against the local daemon only.
+    """
+    return _ok(["lxc", "image", "show", IMAGE["alias"]])
 
 
 def resolve_backend(requested: str, existing_driver: str | None, container: bool) -> str:
@@ -187,6 +204,11 @@ def check_host() -> list[Check]:
                   "remove or rename the pool; sandbed never replaces it")
         )
 
+    checks.append(Check(
+        "image", image_imported(), f"lxc image show {IMAGE['alias']}",
+        "run `sandbed dev host prepare`",
+    ))
+
     if container:
         hostname = socket.gethostname()
         devices = ("/dev/kvm", "/dev/vhost-net", "/dev/vhost-vsock", "/dev/net/tun")
@@ -206,10 +228,15 @@ def check_host() -> list[Check]:
         except (json.JSONDecodeError, ValueError):
             env = {}
         lxd_driver = env.get("environment", {}).get("driver", "")
+        # LXD probes its instance drivers once, at daemon start: devices passed through later
+        # stay unused until the daemon reloads.
         checks.append(Check(
             "lxd-vm", "qemu" in lxd_driver,
             f"environment.driver: {lxd_driver}" if lxd_driver else "no output",
-            "LXD must support VMs (qemu driver): check `lxc query /1.0` environment.driver",
+            "LXD started before the KVM devices existed; run "
+            "`sudo systemctl reload snap.lxd.daemon`" if not missing
+            else "pass through the vm-devices first, then run "
+            "`sudo systemctl reload snap.lxd.daemon`",
         ))
 
     if backend == "dir" and driver is not None:
@@ -255,6 +282,16 @@ def prepare_host(
             raise InputError(
                 f"--storage-source must be an absolute existing directory: {source}"
             )
+    if chosen == "dir" and driver is None:
+        # Fail before anything changes: a pool created on a too-small filesystem cannot be
+        # moved later (it is never replaced).
+        target = source or next(p for p in (LXD_DIR, "/var/snap", "/") if os.path.isdir(p))
+        free_gib = shutil.disk_usage(target).free >> 30
+        if free_gib < MIN_FREE_GIB:
+            raise HostError(
+                f"{target} has {free_gib} GiB free (need {MIN_FREE_GIB}); pass "
+                "--storage-source on a larger filesystem"
+            )
     if chosen == "microceph":
         run(["sudo", str(PREP_SCRIPT), osd_size], capture_output=False)
         if STORAGE_POOL not in _run_out(["sudo", "microceph.rados", "lspools"]).split():
@@ -282,11 +319,27 @@ def prepare_host(
             if source:
                 create_args.append(f"source={source}")
             run(create_args)
+
+    if not _run_ok(["lxc", "image", "show", IMAGE["alias"]]):
+        run(["lxc", "image", "copy", f"{IMAGE['remote']}:{IMAGE['alias']}/cloud",
+             "local:", "--alias", IMAGE["alias"]], capture_output=False)
+    image_show = _run_out(["lxc", "image", "show", IMAGE["alias"]])
+    if (_image_field(image_show, "type") != IMAGE["type"]
+            or _image_field(image_show, "architecture") != IMAGE["architecture"]):
+        raise HostError(
+            f"staged image {IMAGE['alias']} is not a {IMAGE['type']} "
+            f"{IMAGE['architecture']} image"
+        )
+    image_fingerprint = _image_field(image_show, "fingerprint")
+
     record: dict = {
         "storage_backend": chosen,
         "storage_source": source,
         "in_container": container,
         "storage_pool": STORAGE_POOL,
+        "image_remote": IMAGE["remote"],
+        "image_alias": IMAGE["alias"],
+        "image_fingerprint": image_fingerprint,
         "lxd_version": _run_out(["lxc", "version"]),
     }
     if chosen == "microceph":

@@ -58,6 +58,18 @@ def test_host_prepare_rejects_invalid_storage_backend() -> None:
     fake.assert_not_called()
 
 
+def test_create_fails_when_the_image_check_is_not_ok(state) -> None:
+    host_check = __import__("sandbed.dev.host", fromlist=["Check"]).Check
+    with patch.object(commands, "check_host", return_value=[
+        host_check("image", False, "lxc image show 26.04", "run `sandbed dev host prepare`"),
+    ]):
+        result = invoke("create", "--id", "a", "--json")
+    payload = json.loads(result.output)
+    assert result.exit_code == 3
+    assert payload["failure_category"] == "host"
+    assert "image" in payload["message"]
+
+
 def test_errors_become_envelopes_with_context_and_exit_codes() -> None:
     err = DeploymentError("snap changed", stage="deploy.transfer", lab_id="L", run_id="R")
     with patch.object(commands, "deploy", side_effect=err):

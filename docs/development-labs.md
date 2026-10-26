@@ -41,7 +41,13 @@ the bootstrap and the loop OSD setup. `prepare` sets it automatically for the `d
 can also export it yourself when invoking the script directly.
 
 Also needed regardless of backend: `snapcraft`, `squashfs-tools`, KVM with nested virtualization,
-and free disk (300 GiB is the provisional threshold).
+and free disk (50 GiB is the provisional threshold).
+
+Beyond the storage backend, `prepare` imports the pinned Ubuntu cloud image — `ubuntu` remote,
+alias `26.04`, virtual-machine, x86_64 — into LXD's default project, so `create` copies it locally
+instead of downloading it over the network. Re-running `prepare` is a no-op once the image is
+present. The staged image is recorded in `host.json` (`image_remote`, `image_alias`,
+`image_fingerprint`), and `host check` reports its presence as the `image` check.
 
 Provisional sizing per lab: 8 vCPU, 32 GiB RAM, 100 GiB root, 50 GiB storage disk. Calibrate
 before relying on it.
@@ -69,7 +75,11 @@ Passing `/dev/kvm`, `/dev/vhost-net`, `/dev/vhost-vsock` and `/dev/net/tun` weak
 isolation. These devices aren't namespaced: the container shares the host's KVM, vhost and TUN
 subsystems with everything else running there. That's the outer admin's call to make, not
 sandbed's. `host check --json` reports `in_container: true` and lists any missing device under
-`vm-devices` with the exact `lxc config device add` remediation.
+`vm-devices` with the exact `lxc config device add` remediation. LXD detects VM support only when
+its daemon starts: after passing the devices through, run `sudo systemctl reload snap.lxd.daemon`
+(running instances keep running), otherwise `lxd-vm` stays failed. Before creating a `dir` pool,
+`prepare` checks the free space at `--storage-source` (or LXD's own directory when none is given)
+and stops without changing anything if it is below the threshold.
 
 #### Why not ZFS delegation or loop devices
 
@@ -95,7 +105,7 @@ worth the fragility when `dir` already works.
 | Command | What it does |
 |---|---|
 | `dev capabilities` | interface version, commands, profiles, scenarios, sandbed build |
-| `dev create --id L` | project, network, VM; waits for SSH, cloud-init, `/dev/kvm`, `/dev/sdb` |
+| `dev create --id L` | project, network, VM; waits for SSH, cloud-init, `/dev/kvm`, `/dev/sdb`. Fails fast (exit 3) if the pinned image is not staged — run `sandbed dev host prepare` first |
 | `dev build --id L --source DIR [--include F]` | frozen git snapshot, `snapcraft pack`, artifact + provenance |
 | `dev deploy --id L --artifact A` | copy, verify checksum, install `--dangerous`, prepare node, connect plugs, verify |
 | `dev test --id L [--scenario S]` | bootstrap, configure, launch, guest SSH probe, cleanup, then collect |

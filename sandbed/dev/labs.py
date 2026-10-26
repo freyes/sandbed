@@ -18,6 +18,17 @@ LABEL_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
 CIDR_POOL = ipaddress.ip_network("10.213.0.0/16")
 STORAGE_POOL = "sandbed-dev"  # LXD pool and RBD pool prepared by `sandbed dev host prepare`
 
+# The single pinned VM image `sandbed dev` uses. `host prepare` imports it once into LXD's default
+# project; each lab's `terraform/dev-network` then copies from it via the `local:` remote (no
+# network). `record.py` DEFAULT_CONFIG["image_alias"] must equal this alias so prepare and create
+# cannot drift. The `/cloud` source suffix selects the virtual-machine variant on `remote`.
+IMAGE = {
+    "remote": "ubuntu",
+    "alias": "26.04",
+    "type": "virtual-machine",
+    "architecture": "x86_64",
+}
+
 
 def validate_label(label: str) -> str:
     if not LABEL_RE.fullmatch(label) or label.endswith("-"):

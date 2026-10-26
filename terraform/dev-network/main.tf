@@ -31,7 +31,7 @@ resource "lxd_image" "ubuntu" {
   project = lxd_project.lab.name
 
   source_image = {
-    image        = "${var.ubuntu_image_remote}:${var.ubuntu_image_alias}"
+    image        = "local:${var.ubuntu_image_alias}"
     type         = "virtual-machine"
     architecture = "x86_64"
     copy_aliases = true

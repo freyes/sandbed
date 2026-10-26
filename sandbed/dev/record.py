@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict, dataclass, field
 
 from .errors import InputError
+from .labs import IMAGE
 from .paths import LabPaths
 from .state import now
 from .store import atomic_write_json, read_json
@@ -19,7 +20,7 @@ DEFAULT_CONFIG = {
     "memory": 32768,  # MiB; provisional, calibrate on the qualified host
     "disk": 100,  # GiB
     "sdb_size": "50GiB",
-    "image_alias": "26.04",
+    "image_alias": IMAGE["alias"],
     "region": "RegionOne",
     # OpenStack floating-IP network *inside* the lab VM (Sunbeam local access mode). Pinned to
     # Sunbeam's own default so results do not depend on it; must not overlap a lab CIDR.
