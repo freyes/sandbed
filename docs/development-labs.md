@@ -44,7 +44,7 @@ Also needed regardless of backend: `snapcraft`, `squashfs-tools`, KVM with neste
 and free disk (50 GiB is the provisional threshold).
 
 Beyond the storage backend, `prepare` imports the pinned Ubuntu cloud image — `ubuntu` remote,
-alias `26.04`, virtual-machine, x86_64 — into LXD's default project, so `create` copies it locally
+alias `26.04`, virtual-machine, x86_64 — into LXD's default project, so `create` references it
 instead of downloading it over the network. Re-running `prepare` is a no-op once the image is
 present. The staged image is recorded in `host.json` (`image_remote`, `image_alias`,
 `image_fingerprint`), and `host check` reports its presence as the `image` check.
@@ -141,8 +141,11 @@ labs/<uuid>/private/     unredacted collection output; never exported
 ## Isolation
 
 Each lab has its own LXD project (`sbd-<8 hex>`), a management bridge `sbd-<8 hex>-m`, a
-profile, an image copy, project-scoped volumes, its own Terraform state and SSH key. LXD bridge
-networks cannot be project-scoped, so the network is global and told apart by name. CIDRs come
+profile, project-scoped volumes, its own Terraform state and SSH key. LXD bridge
+networks cannot be project-scoped, so the network is global and told apart by name. The VM image
+is the exception: labs share the one staged in the default project (`features.images=false`) and
+reference it by fingerprint, because the Terraform LXD provider can only copy images between
+projects when LXD listens on the network, and `sandbed dev` does not require that. CIDRs come
 from `10.213.0.0/16` and are checked against host routes and LXD networks.
 
 Launched instances use Sunbeam's local-access mode: floating IPs are reachable from the lab VM

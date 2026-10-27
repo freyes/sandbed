@@ -395,11 +395,11 @@ hooks with `sandbed sunbeam`; see `docs/development-labs.md` for usage.
 | Decision | Choice |
 |---|---|
 | Scope | manual provider, one hyperconverged VM, amd64, local execution, one scenario (`bootstrap-and-launch` v1) |
-| Isolation | per-lab LXD project `sbd-<8 hex>`, bridge `sbd-<8 hex>-m` (bridges are not project-scoped), profile, image, volumes, Terraform state, SSH key |
+| Isolation | per-lab LXD project `sbd-<8 hex>`, bridge `sbd-<8 hex>-m` (bridges are not project-scoped), profile, volumes, Terraform state, SSH key (the image is shared, see below) |
 | Shared host storage | RBD pool and LXD ceph pool `sandbed-dev` (microceph) or LXD `dir` pool `sandbed-dev` (dir), created by `sandbed dev host prepare`, never managed or removed by a lab |
-| Shared host image | Ubuntu 26.04 VM image (x86_64), imported by `sandbed dev host prepare` into LXD's default project and copied into each lab project by `dev-network` via the `local:` remote (no network); recorded in `host.json` as `image_remote`/`image_alias`/`image_fingerprint` |
+| Shared host image | Ubuntu 26.04 VM image (x86_64), imported by `sandbed dev host prepare` into LXD's default project and used by every lab by fingerprint (lab projects set `features.images=false`; the Terraform LXD provider cannot copy it into a project over the unix socket, only via `core.https_address`); recorded in `host.json` as `image_remote`/`image_alias`/`image_fingerprint` |
 | In-container storage | `dir` pool; outer admin passes nesting + KVM/vhost/tun devices. `--storage-backend auto|microceph|dir` (default `auto`), `--storage-source PATH`. `zfs.delegate` rejected: zvols aren't namespaced (lxc/incus#739); `ceph` driver needs krbd, not container-usable |
-| Terraform | `terraform/dev-network` (project, bridge, image) and `terraform/dev-manual` (profile, volume, VM), copied per lab |
+| Terraform | `terraform/dev-network` (project, bridge) and `terraform/dev-manual` (profile, volume, VM), copied per lab |
 | State | `$XDG_STATE_HOME/sandbed/dev`; atomic JSON, per-lab flock, host registry lock, stage attempts with orphan reconciliation |
 | Artifact | frozen git snapshot (snapcraft derives the version from git), `snapcraft pack`, provenance, `snap install --dangerous`, installed squashfs checksum compared with provenance |
 | Guest access | Sunbeam local-access mode: floating IPs are reachable from the lab VM only; no external NIC or LXD bridge. The floating network (`172.16.2.0/24`) is pinned explicitly in the manifest |

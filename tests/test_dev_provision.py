@@ -77,8 +77,9 @@ def test_provision_applies_network_then_vm_and_never_manages_the_shared_pool(tmp
         if cmd[0] == "terraform" and "output" in cmd:
             return shell(json.dumps({
                 "mgmt_network_name": {"value": f"{ctx.record.project}-m"},
-                "ubuntu_image_fingerprint": {"value": "fp123"},
             }))
+        if cmd[:3] == ["lxc", "image", "info"]:
+            return shell("Fingerprint: fp123\nArchitecture: x86_64\nType: virtual-machine\n")
         if cmd[0] == "lxc":
             return shell(LXC_INSTANCE)
         return shell("{}")
@@ -98,6 +99,10 @@ def test_provision_applies_network_then_vm_and_never_manages_the_shared_pool(tmp
     manual = json.loads((ctx.paths.terraform("dev-manual") / "terraform.tfvars.json").read_text())
     assert manual["storage_pool"] == STORAGE_POOL and manual["image_fingerprint"] == "fp123"
     assert manual["ssh_key"].startswith("ssh-ed25519")
+    assert record.image_fingerprint == "fp123"
+    net_tfvars = ctx.paths.terraform("dev-network") / "terraform.tfvars.json"
+    net_vars = json.loads(net_tfvars.read_text())
+    assert "ubuntu_image_alias" not in net_vars  # the image is referenced, never copied
     assert (record.provisioning_state, record.vm_uuid, record.vm_address) == (
         "ready", "vm-uuid-1", "10.213.0.7")
     assert LabStore(ctx.paths).load().provisioning_state == "ready"

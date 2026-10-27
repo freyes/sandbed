@@ -6,7 +6,10 @@ resource "lxd_project" "lab" {
   description = "sandbed dev lab ${var.project}"
 
   config = {
-    "features.images"          = "true"
+    # The pinned VM image lives in LXD's default project (staged by `sandbed dev host prepare`)
+    # and is shared: the lab's instance references it by fingerprint. Copying it into the project
+    # would need LXD to listen on the network (the provider cannot copy over the unix socket).
+    "features.images"          = "false"
     "features.profiles"        = "true"
     "features.storage.volumes" = "true"
     # Bridge networks cannot be project-scoped (only OVN can), so they stay global and are
@@ -24,16 +27,5 @@ resource "lxd_network" "mgmt" {
     "ipv4.nat"     = "true"
     "ipv4.dhcp"    = "true"
     "ipv6.address" = "none"
-  }
-}
-
-resource "lxd_image" "ubuntu" {
-  project = lxd_project.lab.name
-
-  source_image = {
-    image        = "local:${var.ubuntu_image_alias}"
-    type         = "virtual-machine"
-    architecture = "x86_64"
-    copy_aliases = true
   }
 }

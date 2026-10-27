@@ -116,6 +116,16 @@ def push_guest_scripts(ctx: LabContext, run_id: str) -> None:
                    log_path=log, timeout=60, check=True)
 
 
+def staged_image_fingerprint(alias: str) -> str:
+    """Fingerprint of the image `host prepare` staged in LXD's default project."""
+    result = run(["lxc", "image", "info", alias], check=False)
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip().lower() == "fingerprint" and value.strip():
+            return value.strip()
+    raise HostError(f"image {alias} is not staged in LXD; run `sandbed dev host prepare`")
+
+
 def provision(ctx: LabContext, run_id: str) -> LabRecord:
     rec, cfg = ctx.record, ctx.record.config
     if rec.provisioning_state == "ready":
@@ -130,16 +140,16 @@ def provision(ctx: LabContext, run_id: str) -> LabRecord:
             prepare_working_copies(ctx)
             write_vars(ctx, "dev-network", {
                 "project": rec.project, "mgmt_cidr": rec.mgmt_cidr,
-                "ubuntu_image_alias": cfg["image_alias"],
             })
             for step in (("init", "-backend=false", "-input=false"),
                          ("apply", "-auto-approve", "-input=false", "-lock-timeout=60s")):
                 terraform(ctx, run_id, "dev-network", *step)
             net = terraform_outputs(ctx, "dev-network")
+            image_fingerprint = staged_image_fingerprint(cfg["image_alias"])
             write_vars(ctx, "dev-manual", {
                 "project": rec.project, "storage_pool": STORAGE_POOL,
                 "mgmt_network_name": net["mgmt_network_name"],
-                "image_fingerprint": net["ubuntu_image_fingerprint"],
+                "image_fingerprint": image_fingerprint,
                 "vcpus": cfg["vcpus"], "memory": cfg["memory"], "disk": cfg["disk"],
                 "sdb_size": cfg["sdb_size"], "ssh_key": public_key, "vm_user": rec.vm_user,
                 "vm_name": rec.vm_name,
@@ -148,7 +158,7 @@ def provision(ctx: LabContext, run_id: str) -> LabRecord:
                          ("apply", "-auto-approve", "-input=false", "-lock-timeout=60s")):
                 terraform(ctx, run_id, "dev-manual", *step)
             rec.vm_uuid, rec.vm_address = instance_info(rec)
-            rec.image_fingerprint = net["ubuntu_image_fingerprint"]
+            rec.image_fingerprint = image_fingerprint
             rec.terraform_version = run(["terraform", "version", "-json"]).stdout.strip()
             ctx.store.save(rec)
             wait_ready(ctx, run_id)

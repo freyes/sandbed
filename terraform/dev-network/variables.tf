@@ -6,8 +6,3 @@ variable "project" {
 variable "mgmt_cidr" {
   type = string
 }
-
-variable "ubuntu_image_alias" {
-  type    = string
-  default = "26.04"
-}

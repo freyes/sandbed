@@ -41,6 +41,10 @@ def test_networks_are_prefixed_and_short_enough_for_an_interface_name() -> None:
     assert re.search(r'name\s*=\s*"\$\{var\.project\}-m"', text)
     assert "lxd_storage_pool" not in text
     assert '"features.networks" = "false"' in text  # bridges cannot be project-scoped
+    # Copying the image into the project needs LXD listening on the network, which a plain
+    # unix-socket host does not do: the lab must use the shared default-project image.
+    assert re.search(r'"features\.images"\s*=\s*"false"', text)
+    assert "lxd_image" not in text
 
 
 def test_the_pool_is_only_referenced_by_variable() -> None:
