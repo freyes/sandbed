@@ -10,7 +10,7 @@ import click
 
 from ..shell import run
 
-INTERFACE_VERSION = 2
+INTERFACE_VERSION = 3
 PROVIDERS = ["manual"]
 PROFILES = ["single-node"]
 SCENARIOS = [{"name": "bootstrap-and-launch", "version": 1}]

@@ -18,5 +18,9 @@ collector with its status, hash and errors; unavailable collectors are recorded,
 | `scenario.guest-reachability` | `instance-console`, `openstack-servers`; the instance may be ACTIVE and unreachable |
 | `scenario.cleanup` | the instance and its floating IP may remain; `destroy` removes the lab anyway |
 
+A detached build keeps its progress output in `log_path` (`runs/<run>/detached.log`) and its
+final envelope in `result_path` (`runs/<run>/result.json`); `status` shows the same envelope as
+`last_run.result`. The `commands/` logs above are written for detached builds too.
+
 If `blocked_reason` is set in `status`, a previous stage was interrupted and its remote work is
 not confirmed stopped. Collect, then destroy the lab.

@@ -5,10 +5,11 @@
 | Command | Read these fields |
 |---|---|
 | `create` | `lab_id`, `vm_address`, `vm_uuid` |
-| `build` | `artifact_id`, `artifact.sha256`, `artifact.source_head`, `artifact.source_content_sha256`, `artifact.adapter_qualified` |
+| `build --detach` | `status` (`running`), `run_id`, `log_path`, `result_path`; then poll `status` |
+| `build` (blocking) | `artifact_id`, `artifact.sha256`, `artifact.source_head`, `artifact.source_content_sha256`, `artifact.adapter_qualified` |
 | `deploy` | `artifact_id`, `snap_version`, `installed_sha256`, `already_deployed` |
 | `test` | `status`, `failure_category`, `failed_stage`, `assertions`, `artifact`, `collection_status`, `report_path`, `diagnostics_path` |
-| `status` | `provisioning_state`, `blocked_reason`, `attempts[]` |
+| `status` | `provisioning_state`, `blocked_reason`, `busy`, `last_run.{run_id,kind,state,artifact_id,result}`, `attempts[]` |
 | `collect` | `collection_status`, `diagnostics_path`, `collection.entries[]` |
 
 ## Assertions of `bootstrap-and-launch` (version 1)
