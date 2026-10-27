@@ -569,6 +569,9 @@ def _lxd_vm(devices_present: bool) -> host.Check:
         patch("sandbed.dev.host.in_container", return_value=True),
         patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=400 << 30)),
         patch("sandbed.dev.host.os.path.exists", return_value=devices_present),
+        # os.path.exists is patched, so Path.exists() would claim sysfs files that a CI
+        # runner without KVM does not have.
+        patch("sandbed.dev.host._nested_kvm", return_value=(True, "kvm_intel nested=Y")),
     ):
         return next(c for c in host.check_host() if c.name == "lxd-vm")
 
