@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""loginctl shim: `show-user UID -p Linger` always reports linger enabled."""
+import sys
+
+if sys.argv[1:2] == ["show-user"]:
+    print("Linger=yes")
+    sys.exit(0)
+print(f"loginctl shim: unsupported arguments {sys.argv[1:]}", file=sys.stderr)
+sys.exit(1)

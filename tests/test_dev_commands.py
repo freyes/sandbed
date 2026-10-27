@@ -10,6 +10,7 @@ from sandbed.cli import cli
 from sandbed.dev import commands
 from sandbed.dev.errors import DeploymentError, HostError, InputError, ScenarioError
 from sandbed.dev.record import LabStore
+from sandbed.dev.results import Outcome, envelope, error_envelope
 from sandbed.dev.store import LockBusy, exclusive_lock
 
 
@@ -29,30 +30,41 @@ def test_the_command_surface_is_the_published_one() -> None:
         payload = json.loads(invoke("capabilities", "--json").output)
     assert payload["commands"] == [
         "build", "capabilities", "collect", "create", "deploy", "destroy", "host check",
-        "host prepare", "status", "test",
+        "host prepare", "job cancel", "job list", "job logs", "job status", "job wait", "status",
+        "test",
     ]
 
 
-def test_create_options_reach_the_command() -> None:
-    with patch.object(commands, "create", return_value={"human": "ok"}) as fake:
+def stub_outcome(payload: dict | None = None, code: int = 0, human: str = "ok") -> Outcome:
+    return Outcome(payload or envelope("x", "succeeded"), human, code)
+
+
+def test_create_options_reach_the_job_params() -> None:
+    with patch("sandbed.dev.cli.runjob.launch", return_value=stub_outcome()) as fake:
         result = invoke("create", "--id", "bug-1", "--vcpus", "4", "--sdb-size", "10GiB", "--json")
     assert result.exit_code == 0
     fake.assert_called_once_with(
-        "bug-1", provider="manual", profile="single-node",
-        overrides={"vcpus": 4, "memory": None, "disk": None, "sdb_size": "10GiB"},
+        "create",
+        {"lab": "bug-1", "provider": "manual", "profile": "single-node",
+         "overrides": {"vcpus": 4, "memory": None, "disk": None, "sdb_size": "10GiB"}},
+        "bug-1", detach=False,
     )
 
 
 def test_host_prepare_forwards_storage_backend_and_source() -> None:
-    with patch.object(commands, "prepare_host", return_value={}) as fake:
+    with patch("sandbed.dev.cli.runjob.launch", return_value=stub_outcome()) as fake:
         result = invoke("host", "prepare", "--storage-backend", "dir",
                         "--storage-source", "/srv/x", "--json")
     assert result.exit_code == 0
-    fake.assert_called_once_with("100G", backend="dir", source="/srv/x")
+    fake.assert_called_once_with(
+        "host prepare",
+        {"osd_size": "100G", "storage_backend": "dir", "storage_source": "/srv/x"},
+        "@host", detach=False,
+    )
 
 
 def test_host_prepare_rejects_invalid_storage_backend() -> None:
-    with patch.object(commands, "prepare_host") as fake:
+    with patch("sandbed.dev.cli.runjob.launch") as fake:
         result = invoke("host", "prepare", "--storage-backend", "bogus", "--json")
     assert result.exit_code == 2
     fake.assert_not_called()
@@ -63,17 +75,17 @@ def test_create_fails_when_the_image_check_is_not_ok(state) -> None:
     with patch.object(commands, "check_host", return_value=[
         host_check("image", False, "lxc image show 26.04", "run `sandbed dev host prepare`"),
     ]):
-        result = invoke("create", "--id", "a", "--json")
-    payload = json.loads(result.output)
-    assert result.exit_code == 3
-    assert payload["failure_category"] == "host"
-    assert "image" in payload["message"]
+        with pytest.raises(HostError, match="image") as caught:
+            commands.create("a", provider="manual", profile="single-node", overrides={})
+    assert caught.value.exit_code == 3
 
 
 def test_errors_become_envelopes_with_context_and_exit_codes() -> None:
     err = DeploymentError("snap changed", stage="deploy.transfer", lab_id="L", run_id="R")
-    with patch.object(commands, "deploy", side_effect=err):
+    stub = stub_outcome(error_envelope("deploy", err), code=4)
+    with patch("sandbed.dev.cli.runjob.launch", return_value=stub) as fake:
         result = invoke("deploy", "--id", "a", "--artifact", "a-1", "--json")
+    fake.assert_called_once_with("deploy", {"lab": "a", "artifact": "a-1"}, "a", detach=False)
     payload = json.loads(result.output)
     assert result.exit_code == 4
     assert (payload["status"], payload["failure_category"], payload["failed_stage"]) == (
@@ -82,10 +94,12 @@ def test_errors_become_envelopes_with_context_and_exit_codes() -> None:
 
 
 def test_a_failed_test_result_exits_with_its_layer_code() -> None:
-    fake_result = {"status": "failed", "exit_code": 5, "failure_category": "scenario",
-                   "failed_stage": "scenario.guest-reachability", "run_id": "R"}
-    with patch.object(commands, "run_test", return_value=fake_result):
+    payload_in = envelope("test", "failed", failure_category="scenario",
+                          failed_stage="scenario.guest-reachability", run_id="R")
+    with patch("sandbed.dev.cli.runjob.launch", return_value=stub_outcome(payload_in, 5)) as fake:
         result = invoke("test", "--id", "a", "--json")
+    assert fake.call_args.args == (
+        "test", {"lab": "a", "scenario": "bootstrap-and-launch"}, "a")
     payload = json.loads(result.output)
     assert result.exit_code == 5 and payload["failed_stage"].endswith("guest-reachability")
     assert "exit_code" not in payload
@@ -98,7 +112,9 @@ def test_ctrl_c_exits_130_without_claiming_anything_stopped() -> None:
 
 
 def test_only_manual_single_node_is_accepted(state) -> None:
-    result = invoke("create", "--id", "a", "--provider", "maas", "--json")
+    with patch("sandbed.dev.cli.runjob.launch") as fake:
+        result = invoke("create", "--id", "a", "--provider", "maas", "--json")
+    fake.assert_not_called()
     assert result.exit_code == 2 and json.loads(result.output)["failure_category"] == "input"
 
 

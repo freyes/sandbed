@@ -8,6 +8,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
+from . import jobs, systemd
 from .build import build as build_artifact
 from .context import LabContext, open_lab
 from .deploy import deploy as deploy_artifact
@@ -22,10 +23,11 @@ from .provision import provision
 from .record import DEFAULT_CONFIG, LabRecord, LabStore, config_hash
 from .report import build_result, write_result
 from .scenarios import NAME, Outcome, run_scenario
-from .state import now
-from .store import atomic_write_json, ensure_private_dir, read_json
+from .state import RUNNING, AttemptLog, now
+from .store import LockBusy, atomic_write_json, ensure_private_dir, read_json
 
 SUPPORTED_SCENARIOS = (NAME,)
+SUPPORTED_PROVIDER_PROFILE = ("manual", "single-node")
 
 
 def new_run(ctx: LabContext, kind: str) -> str:
@@ -65,7 +67,7 @@ def host_prepare(
 
 def create(label: str, *, provider: str, profile: str, overrides: dict) -> dict:
     validate_label(label)
-    if (provider, profile) != ("manual", "single-node"):
+    if (provider, profile) != SUPPORTED_PROVIDER_PROFILE:
         raise InputError("milestone 1 supports only --provider manual --profile single-node")
     config = {**DEFAULT_CONFIG, **{k: v for k, v in overrides.items() if v is not None}}
     reg, uid = Registry(), os.getuid()
@@ -162,17 +164,42 @@ def run_test(label: str, scenario: str) -> dict:
 
 
 def status(label: str) -> dict:
-    with open_lab(label, mutate=False) as ctx:
-        rec = ctx.record
-        return {
-            **_ids(ctx, rec.last_run_id),
-            "provisioning_state": rec.provisioning_state,
-            "vm_address": rec.vm_address,
-            "installed_artifact_id": rec.installed_artifact_id,
-            "blocked_reason": ctx.log.blocked_reason(),
-            "attempts": [asdict(a) for a in ctx.log.attempts()],
-            "human": f"{label}: {rec.provisioning_state}",
-        }
+    try:
+        with open_lab(label, mutate=False) as ctx:
+            rec = ctx.record
+            return {
+                **_ids(ctx, rec.last_run_id),
+                "provisioning_state": rec.provisioning_state,
+                "vm_address": rec.vm_address,
+                "installed_artifact_id": rec.installed_artifact_id,
+                "blocked_reason": ctx.log.blocked_reason(),
+                "attempts": [asdict(a) for a in ctx.log.attempts()],
+                "human": f"{label}: {rec.provisioning_state}",
+            }
+    except LockBusy:
+        return _busy_status(label)
+
+
+def _busy_status(label: str) -> dict:
+    """Lock-free read for a lab another process is working on: no reconcile, no writes."""
+    entry = Registry().find(label, os.getuid())
+    paths = lab_paths(entry.lab_uuid)
+    rec = LabStore(paths).load()
+    attempts = AttemptLog(paths.attempts).attempts()
+    bus = systemd.bus_env(os.environ, os.getuid())
+    active = jobs.find_active(entry.lab_uuid, lambda unit: systemd.show(unit, env=bus))
+    running = next((a for a in reversed(attempts) if a.state == RUNNING), None)
+    return {
+        "lab_id": entry.lab_uuid, "label": entry.label, "run_id": rec.last_run_id,
+        "provisioning_state": rec.provisioning_state,
+        "vm_address": rec.vm_address,
+        "installed_artifact_id": rec.installed_artifact_id,
+        "attempts": [asdict(a) for a in attempts],
+        "busy": True,
+        "active_job": active.job_id if active else None,
+        "blocked_reason": f"{running.stage} is still running" if running else None,
+        "human": f"{label}: {rec.provisioning_state} (busy)",
+    }
 
 
 def collect(label: str, run_id: str) -> dict:
