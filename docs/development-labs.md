@@ -40,6 +40,13 @@ never replaced: if the resolved backend's driver disagrees with the existing poo
 the bootstrap and the loop OSD setup. `prepare` sets it automatically for the `dir` backend; you
 can also export it yourself when invoking the script directly.
 
+`host check` also reports two checks that detached jobs depend on. `systemd-user` passes when
+`systemd-run --version` reports systemd 240 or newer and `systemctl --user show-environment`
+reaches a user manager. `sudo` runs `sudo -n true` under `setsid -w` (no controlling terminal), so
+it only passes with passwordless sudo (`NOPASSWD`). Every `sandbed dev` command that runs as a job
+(see [Detached jobs](#detached-jobs)) has no terminal: `create` and `host prepare` need
+`NOPASSWD`, and credentials cached with `sudo -v` in your shell do not carry over.
+
 Also needed regardless of backend: `snapcraft`, `squashfs-tools`, KVM with nested virtualization,
 and free disk (50 GiB is the provisional threshold).
 
@@ -115,11 +122,24 @@ worth the fragility when `dir` already works.
 
 All accept `--json` (one object on stdout, progress on stderr).
 
+`host prepare`, `create`, `build`, `deploy`, `test`, `collect` and `destroy` also accept
+`--detach`: start the command as a background systemd job, print a launch envelope and return
+right away. See [Detached jobs](#detached-jobs).
+
+| Command | What it does |
+|---|---|
+| `dev job status --job J` | state, progress and stderr tail of one job |
+| `dev job logs --job J` | read a job log from a byte offset |
+| `dev job wait --job J` | wait for a job to finish |
+| `dev job cancel --job J` | stop a running job |
+| `dev job list` | recent jobs, newest first |
+
 ## Exit codes
 
 0 succeeded; 2 invalid input, incompatible state or unsupported profile; 3 host or provisioning
 failure; 4 build or deployment failure; 5 scenario assertion failure; 6 internal failure or an
-incomplete `collect`; 130 interrupted.
+incomplete `collect`; 130 interrupted. A `--detach` launch exits 0 with `status: running`, whatever
+the job later does. No exit code was added for jobs.
 
 ## State
 
@@ -136,7 +156,127 @@ labs/<uuid>/terraform/   per-lab copies of dev-network and dev-manual with their
 labs/<uuid>/artifacts/<id>/{openstack.snap,provenance.json}
 labs/<uuid>/runs/<run>/{result.json,report.md,diagnostics*/,diagnostics*.tar.gz,commands/}
 labs/<uuid>/private/     unredacted collection output; never exported
+jobs/<job_id>/{job.json,launched.json,started.json,env,result.json,exit.json,stdout.log,stderr.log}
 ```
+
+## Detached jobs
+
+Long commands run as transient `systemd-run --user` units, so they survive a closed terminal or a
+dropped SSH session. With `--detach` the command returns at once and you follow the job; without
+it the command blocks as before. Interface version 3 (`dev capabilities`) introduced this.
+
+### Requirements
+
+A reachable systemd `--user` manager and systemd 240 or newer (`host check` reports it as
+`systemd-user`, with the linger state in the detail). Without a login session the manager needs
+linger, and your shell needs `XDG_RUNTIME_DIR`:
+
+```bash
+sudo loginctl enable-linger $USER
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+```
+
+Without linger a job still runs, but it ends when your last login session does. The launch
+envelope reports `linger` (`true`, `false` or `null` when unknown). The python interpreter path
+and the job directory must not contain whitespace or any of `" ' \ $ % ;`. sandbed refuses to
+launch rather than escape them; set `XDG_STATE_HOME` to a plain path if yours has one. Passwordless
+sudo is needed for `create` and `host prepare` (see [Host](#host)).
+
+There is no opt-out and no fallback for hosts without systemd `--user`: those commands fail with
+exit 3 and a remediation.
+
+### Launching
+
+```bash
+sandbed dev build --id L --source DIR --detach --json
+```
+
+The launch envelope has `status: running`, exit code 0 and these fields: `job_id`, `unit`
+(`sandbed-dev-<job_id>`), `job_path`, `stdout_path`, `stderr_path`, `linger` and `next` (the
+`sandbed dev job wait` command to run). Input is validated and the host gate runs first, so a bad
+label or a missing `systemd-user` or `sudo` check fails before a job exists. A lab that already
+has an active job refuses a second one (exit 2, the error names the `job_id`).
+
+The environment reaches the worker through a `0600` `env` file in the job directory, filtered by
+an allowlist (`PATH`, `HOME`, `USER`, locale, `XDG_*_HOME`, proxy and CA variables, and the
+`SANDBED_`, `TF_`, `LXD_` and `SNAPCRAFT_` prefixes). It is never passed on the command line.
+
+### Following a job
+
+All take `--job J` and `--json`. They are lock-free: they take no lab lock and write nothing.
+
+| Command | Options |
+|---|---|
+| `sandbed dev job status` | none |
+| `sandbed dev job logs` | `--stream stderr\|stdout` (default `stderr`), `--offset N` (default 0), `--max-bytes N` (default 65536, capped at 1 MiB); returns `next_offset`, `size`, `eof`, `finished` |
+| `sandbed dev job wait` | `--timeout SEC` (default 300, capped at 3600); returns `timed_out` |
+| `sandbed dev job cancel` | none; returns `cancelled` and, when already finished, `reason` |
+| `sandbed dev job list` | `--active`, `--lab L`, `--limit N` (default 20) |
+
+These exit 0 whenever the inspection itself worked, even if the job failed or timed out. Read the
+outcome from the envelope: `job.state` (`starting`, `running`, `succeeded`, `failed`,
+`interrupted`, `lost`), `job.exit_code`, `job.service_result` (what systemd recorded) and
+`job.result` (the command's own envelope, with its own `status` and failure category).
+`job.progress` carries `current_stage`, the last attempts and a stderr tail while the job runs.
+
+### Blocking runs use the same unit
+
+Without `--detach` the command still starts a transient unit and waits for it. Output and exit
+codes match the old in-process run. The job's `stdout.log` and `stderr.log` are tailed to your
+stderr while it runs, and the envelope is printed once at the end. Ctrl+C or SIGTERM stops the
+unit and exits 130. If the blocking parent is SIGKILLed, the unit keeps running: find it with
+`sandbed dev job list --active` and stop it with `sandbed dev job cancel`.
+
+### Time limits
+
+Each unit has a `RuntimeMaxSec` backstop. It is `ceil(1.25 x` the sum of the command's enumerated
+stage deadlines`) + 120` seconds. Blocking runs are bounded by it too, which they were not before.
+When it fires, systemd sends SIGTERM: a responsive worker publishes an `interrupted` result
+(exit 130); a worker that does not stop in time is killed and the job ends `failed` ("worker
+exceeded RuntimeMaxSec", exit 6). Either way `job.service_result` is `timeout`. Treat both as "the
+per-command time cap was hit": collect, then destroy and recreate the lab.
+
+| Command | RuntimeMaxSec |
+|---|---|
+| `host prepare` | 13620 s (3 h of enumerated budget, plus margin) |
+| `create` | 7395 s |
+| `build` | 4620 s |
+| `deploy` | 9308 s |
+| `test` | 14370 s |
+| `collect` | 2895 s |
+| `destroy` | 4695 s |
+
+### Cancelling
+
+The unit uses `KillMode=mixed` and `TimeoutStopSec=60s`. A cancel sends SIGTERM to the worker
+only, which stops its own child process groups once, so Terraform sees a single interrupt and
+exits cleanly. Anything left over gets SIGKILL after the stop timeout. This is the same contract
+as [Interruption](#interruption): the job ends `interrupted` (exit 130), and remote guest work
+may still be running.
+
+Cancelling `host prepare` may leave `prep-host.sh` running. It runs as root through sudo, and
+neither the worker nor the user manager can signal root processes. Check with `ps` and stop it
+yourself.
+
+### The job directory
+
+`jobs/<job_id>/` is private (`0700`) and holds, each written by one process:
+
+- `job.json`: command, parameters, lab, unit name, creation time. Written once.
+- `launched.json`: written after `systemd-run` accepted the unit.
+- `started.json`: written by the worker when it begins.
+- `env`: the `0600` environment file.
+- `result.json`: the final envelope, human line and exit code. It is persisted because the unit
+  runs with `--collect`, which unloads a failed unit and its status with it.
+- `exit.json`: `service_result` and exit details recorded by the unit's `ExecStopPost` finalizer.
+  If the worker never published a result (killed, timed out, OOM), the finalizer writes a failed
+  one.
+- `stdout.log`, `stderr.log`: the unit's output.
+
+Jobs are never pruned automatically. Delete old directories under `jobs/` yourself.
+
+`dev status --id L` on a lab with a running job does not wait for the lab lock: it returns the
+last recorded state with `busy: true`.
 
 ## Isolation
 
