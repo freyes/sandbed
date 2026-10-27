@@ -71,6 +71,10 @@ lxc config device add <c> sandbed-dev disk pool=<outer-pool> source=<c>-sandbed-
 sandbed dev host prepare --storage-source /srv/sandbed-dev
 ```
 
+Inside the container, AppArmor refuses QEMU the file behind the lab VM's extra disk (`sdb`), so the
+VM would fail to start with `No file descriptor supplied via SCM_RIGHTS`. `dev-manual` therefore
+sets `raw.apparmor` on the lab VM to allow that one volume directory.
+
 Passing `/dev/kvm`, `/dev/vhost-net`, `/dev/vhost-vsock` and `/dev/net/tun` weakens container
 isolation. These devices aren't namespaced: the container shares the host's KVM, vhost and TUN
 subsystems with everything else running there. That's the outer admin's call to make, not

@@ -47,6 +47,23 @@ def test_networks_are_prefixed_and_short_enough_for_an_interface_name() -> None:
     assert "lxd_image" not in text
 
 
+def test_the_lab_vm_may_receive_its_sdb_volume_under_apparmor() -> None:
+    text = hcl("dev-manual")
+    # Without this rule the VM cannot start inside an LXD container (SCM_RIGHTS fd is refused).
+    assert re.search(r'"raw\.apparmor"\s*=\s*local\.sdb_apparmor', text)
+    rule = re.search(r'sdb_apparmor\s*=\s*"([^"]+)"', text).group(1)
+    assert rule.startswith("/var/snap/lxd/common/lxd/storage-pools/${var.storage_pool}/custom/")
+    assert "${var.project}_${var.vm_name}-sdb" in rule  # this lab's volume only, never the pool
+    assert rule.endswith("/** rwk,")
+
+
+def test_wait_for_does_not_pin_the_guest_interface_name() -> None:
+    text = hcl("dev-manual")
+    block = re.search(r'wait_for\s*\{(.*?)\}', text, re.S).group(1)
+    assert 'type = "ipv4"' in block
+    assert "nic" not in block  # the guest names it enp5s0, not the LXD device name eth0
+
+
 def test_the_pool_is_only_referenced_by_variable() -> None:
     text = hcl("dev-manual")
     assert 'variable "storage_pool"' in text and text.count("var.storage_pool") >= 3
