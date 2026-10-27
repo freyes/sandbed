@@ -404,4 +404,4 @@ hooks with `sandbed sunbeam`; see `docs/development-labs.md` for usage.
 | Artifact | frozen git snapshot (snapcraft derives the version from git), `snapcraft pack`, provenance, `snap install --dangerous`, installed squashfs checksum compared with provenance |
 | Guest access | Sunbeam local-access mode: floating IPs are reachable from the lab VM only; no external NIC or LXD bridge. The floating network (`172.16.2.0/24`) is pinned explicitly in the manifest |
 | Failure policy | collect diagnostics, preserve the lab; a failed bootstrap needs a new lab |
-| Public interface | `--json` envelope `schema_version` 1, exit codes 0/2/3/4/5/6/130, `sandbed dev capabilities` interface version 2 (storage backends `microceph`, `dir`) |
+| Public interface | `--json` envelope `schema_version` 1, exit codes 0/2/3/4/5/6/130, `sandbed dev capabilities` interface version 3 (`dev build --detach`: `status: running` envelope, `dev status` `busy` and `last_run`) (storage backends `microceph`, `dir`) |

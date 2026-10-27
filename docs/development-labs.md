@@ -110,14 +110,36 @@ worth the fragility when `dir` already works.
 |---|---|
 | `dev capabilities` | interface version, commands, profiles, scenarios, sandbed build |
 | `dev create --id L` | project, network, VM; waits for SSH, cloud-init, `/dev/kvm`, `/dev/sdb`. Fails fast (exit 3) if the pinned image is not staged — run `sandbed dev host prepare` first |
-| `dev build --id L --source DIR [--include F]` | frozen git snapshot, `snapcraft pack`, artifact + provenance |
+| `dev build --id L --source DIR [--include F] [--detach]` | frozen git snapshot, `snapcraft pack`, artifact + provenance. `--detach` runs it in the background (see below) |
 | `dev deploy --id L --artifact A` | copy, verify checksum, install `--dangerous`, prepare node, connect plugs, verify |
 | `dev test --id L [--scenario S]` | bootstrap, configure, launch, guest SSH probe, cleanup, then collect |
-| `dev status --id L` | lab state and stage attempts |
+| `dev status --id L` | lab state, stage attempts, and `last_run` (state and result of the latest run) |
 | `dev collect --id L --run R` | another diagnostics attempt |
 | `dev destroy --id L` | remove lab resources, keep results |
 
 All accept `--json` (one object on stdout, progress on stderr).
+
+## Detached builds
+
+A build takes up to an hour. `dev build --detach` validates the lab and host, then forks a worker
+in its own session and returns at once with exit 0 and `status: running`, plus `run_id`, `pid`,
+`log_path` (`runs/<run>/detached.log`, the build's progress output) and `result_path`. A refusal
+(unknown lab, lab lock held, host not ready) still fails synchronously with its normal exit code.
+
+The worker holds the lab lock for the whole build, so `status` does not take the lock when it
+is busy: it reads the state files directly and reports `busy: true`. Poll `dev status --id L` and
+read `last_run`:
+
+| `last_run.state` | Meaning |
+|---|---|
+| `running` | the worker is alive |
+| `succeeded` | `last_run.artifact_id` and `last_run.result` (the build envelope) are set |
+| `failed` | `last_run.result` carries `failure_category`, `failed_stage`, `message` |
+| `interrupted` | the worker died without recording a result (for example it was killed) |
+
+The worker writes the same envelope a foreground `build --json` prints to
+`runs/<run>/result.json`. There is no cancel command; a detached build ends when `snapcraft` does
+or when its process is killed.
 
 ## Exit codes
 
