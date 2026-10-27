@@ -1,0 +1,28 @@
+core:
+  config:
+    region: "{{ region }}"
+    bootstrap:
+      management_cidr: "{{ mgmt_cidr }}"
+    external-networks:
+      physnet1:
+        cidr: "{{ floating_cidr }}"
+        gateway: "{{ floating_gateway }}"
+        range: "{{ floating_start }}-{{ floating_end }}"
+        network_type: flat
+    user:
+      run_demo_setup: true
+      security_group_rules: true
+      remote_access_location: local
+      physnet: physnet1
+  software:
+    juju:
+      bootstrap:
+        series: noble
+    charms:
+      openstack-hypervisor:
+        series: noble
+storage:
+  microceph:
+    osd-devices:
+      - /dev/sdb
+features: {}

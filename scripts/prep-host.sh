@@ -4,11 +4,22 @@ set -euo pipefail
 # prep-host.sh — install and configure host dependencies for sandbed.
 # Idempotent: safe to run multiple times; already-installed/configured pieces
 # are skipped.
+#
+# Set SANDBED_PREP_MICROCEPH=0 to skip the microceph snap install, the
+# `snap refresh --hold microceph`, the `microceph cluster bootstrap`, and the
+# `microceph disk add` steps (e.g. when the host already has Ceph or storage
+# is managed elsewhere). Default is 1 (install and configure microceph).
 
-SNAPS=(lxd microceph)
 CLASSIC_SNAPS=(astral-uv terraform)
 
 OSD_SIZE="${1:-4G}"
+PREP_MICROCEPH="${SANDBED_PREP_MICROCEPH:-1}"
+
+if [[ "${PREP_MICROCEPH}" != "0" ]]; then
+    SNAPS=(lxd microceph)
+else
+    SNAPS=(lxd)
+fi
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "error: this script must be run as root (or with sudo)" >&2
@@ -45,22 +56,26 @@ else
     lxd init --auto
 fi
 
-# Prevent the microceph snap from auto-updating into a broken cluster.
-snap refresh --hold microceph >/dev/null 2>&1 || true
+if [[ "${PREP_MICROCEPH}" != "0" ]]; then
+    # Prevent the microceph snap from auto-updating into a broken cluster.
+    snap refresh --hold microceph >/dev/null 2>&1 || true
 
-if sudo microceph cluster list >/dev/null 2>&1; then
-    echo "microceph: cluster already bootstrapped, skipping bootstrap"
-else
-    echo "microceph: bootstrapping single-node cluster"
-    sudo microceph cluster bootstrap
-fi
+    if sudo microceph cluster list >/dev/null 2>&1; then
+        echo "microceph: cluster already bootstrapped, skipping bootstrap"
+    else
+        echo "microceph: bootstrapping single-node cluster"
+        sudo microceph cluster bootstrap
+    fi
 
-osd_count="$(sudo microceph.ceph osd stat 2>/dev/null | sed -n 's/^\([0-9]*\) osds:.*/\1/p')"
-if [ -n "${osd_count}" ] && [ "${osd_count}" -gt 0 ]; then
-    echo "microceph: ${osd_count} OSD(s) present, skipping disk setup"
+    osd_count="$(sudo microceph.ceph osd stat 2>/dev/null | sed -n 's/^\([0-9]*\) osds:.*/\1/p')"
+    if [ -n "${osd_count}" ] && [ "${osd_count}" -gt 0 ]; then
+        echo "microceph: ${osd_count} OSD(s) present, skipping disk setup"
+    else
+        echo "microceph: adding file-backed OSDs (3 x ${OSD_SIZE} loop)"
+        sudo microceph disk add "loop,${OSD_SIZE},3"
+    fi
 else
-    echo "microceph: adding file-backed OSDs (3 x ${OSD_SIZE} loop)"
-    sudo microceph disk add "loop,${OSD_SIZE},3"
+    echo "microceph: skipped (SANDBED_PREP_MICROCEPH=0)"
 fi
 
 echo "prep-host: done"

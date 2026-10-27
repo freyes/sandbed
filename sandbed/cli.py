@@ -9,6 +9,7 @@ import click
 from . import sshkey, terraform, testflinger
 from .config import Config, load_config
 from .destroy import destroy
+from .dev.cli import dev
 from .hooks import run_hook
 from .install import install
 from .maas import setup_maas
@@ -141,6 +142,9 @@ def sunbeam(provider: str, action: str, **flags) -> None:
     finally:
         if not ctx.no_hooks:
             run_hook("post-run", ctx)
+
+
+cli.add_command(dev)
 
 
 def _dispatch(ctx: Config, phase: str) -> None:

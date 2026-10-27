@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""systemctl shim over the state files written by the systemd-run shim ($SHIM_STATE/<unit>.json).
+
+Supports exactly: `--user show -p PROP ... UNIT`, `--user stop UNIT`, `--user show-environment`.
+"""
+import json
+import os
+import signal
+import sys
+import time
+
+STATE = os.environ.get("SHIM_STATE", "")
+STOP_WAIT_SEC = 120
+
+
+def load(unit):
+    try:
+        with open(os.path.join(STATE, f"{unit}.json")) as fh:
+            return json.load(fh)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def show(args):
+    props, unit, i = [], None, 0
+    while i < len(args):
+        if args[i] == "-p":
+            props.append(args[i + 1])
+            i += 2
+        else:
+            unit = args[i]
+            i += 1
+    st = load(unit)
+    if st is None or st["phase"] == "finished" and st["collect"]:
+        values = {"LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead",
+                  "Result": "success", "ExecMainStatus": "0"}
+    else:
+        values = {"LoadState": "loaded", "ActiveState": st["active_state"],
+                  "SubState": st["sub_state"], "Result": st["result"],
+                  "ExecMainStatus": str(st["exec_main_status"])}
+    for prop in props or values:
+        print(f"{prop}={values.get(prop, '')}")
+    return 0
+
+
+def stop(unit):
+    st = load(unit)
+    if st is None or st["phase"] == "finished":
+        print(f"Unit {unit}.service not loaded.", file=sys.stderr)
+        return 5
+    try:
+        os.kill(st["supervisor_pid"], signal.SIGUSR1)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + STOP_WAIT_SEC
+    while time.monotonic() < deadline:
+        st = load(unit)
+        if st is None or st["phase"] == "finished":
+            return 0
+        time.sleep(0.05)
+    print(f"Job for {unit}.service canceled: timed out", file=sys.stderr)
+    return 1
+
+
+def main(argv):
+    if argv[:2] == ["--user", "show-environment"]:
+        print("XDG_RUNTIME_DIR=/run/user/1000")
+        return 0
+    if argv[:2] == ["--user", "show"]:
+        return show(argv[2:])
+    if argv[:2] == ["--user", "stop"] and len(argv) == 3:
+        return stop(argv[2])
+    print(f"systemctl shim: unsupported arguments {argv}", file=sys.stderr)
+    return 1
+
+
+sys.exit(main(sys.argv[1:]))
