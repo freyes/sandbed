@@ -174,7 +174,8 @@ def test_held_lab_lock_surfaces_as_input_error_through_the_cli(tmp_path, monkeyp
     proc.start()
     try:
         assert ready.wait(10)
-        result = CliRunner().invoke(cli, ["dev", "status", "--id", "a", "--json"])
+        result = CliRunner().invoke(
+            cli, ["dev", "collect", "--id", "a", "--run", "r1", "--json"])
     finally:
         release.set()
         proc.join(10)

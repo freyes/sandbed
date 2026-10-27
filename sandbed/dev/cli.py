@@ -123,10 +123,16 @@ def create(lab, provider, profile, vcpus, memory, disk, sdb_size, json_mode) -> 
 @_id_option
 @click.option("--source", required=True, type=click.Path(exists=True, file_okay=False))
 @click.option("--include", multiple=True, help="Untracked file to include (repeatable).")
+@click.option(
+    "--detach", is_flag=True,
+    help="Run the build in the background and return at once (status: running); poll "
+         "`dev status` for the outcome and artifact_id.",
+)
 @json_option
-def build(lab, source, include, json_mode) -> None:
+def build(lab, source, include, detach, json_mode) -> None:
     """Build the current source snapshot into a registered artifact."""
-    execute("build", json_mode, lambda: commands.build(lab, source, include))
+    run_build = commands.build_detached if detach else commands.build
+    execute("build", json_mode, lambda: run_build(lab, source, include))
 
 
 @dev.command("deploy", context_settings=CONTEXT_SETTINGS)
