@@ -100,9 +100,9 @@ def pool_driver() -> str | None:
 
 def _image_field(out: str, field: str) -> str | None:
     for line in out.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(f"{field}:"):
-            return stripped.split(":", 1)[1].strip()
+        key, sep, value = line.strip().partition(":")
+        if sep and key.lower() == field.lower():
+            return value.strip()
     return None
 
 
@@ -321,16 +321,16 @@ def prepare_host(
             run(create_args)
 
     if not _run_ok(["lxc", "image", "show", IMAGE["alias"]]):
-        run(["lxc", "image", "copy", f"{IMAGE['remote']}:{IMAGE['alias']}/cloud",
-             "local:", "--alias", IMAGE["alias"]], capture_output=False)
-    image_show = _run_out(["lxc", "image", "show", IMAGE["alias"]])
-    if (_image_field(image_show, "type") != IMAGE["type"]
-            or _image_field(image_show, "architecture") != IMAGE["architecture"]):
+        run(["lxc", "image", "copy", f"{IMAGE['remote']}:{IMAGE['alias']}",
+             "local:", "--alias", IMAGE["alias"], "--vm"], capture_output=False)
+    image_info = _run_out(["lxc", "image", "info", IMAGE["alias"]])
+    if (_image_field(image_info, "type") != IMAGE["type"]
+            or _image_field(image_info, "architecture") != IMAGE["architecture"]):
         raise HostError(
             f"staged image {IMAGE['alias']} is not a {IMAGE['type']} "
             f"{IMAGE['architecture']} image"
         )
-    image_fingerprint = _image_field(image_show, "fingerprint")
+    image_fingerprint = _image_field(image_info, "fingerprint")
 
     record: dict = {
         "storage_backend": chosen,

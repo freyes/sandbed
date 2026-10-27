@@ -19,7 +19,9 @@ def _proc(code: int = 0, out: str = "") -> MagicMock:
     return MagicMock(returncode=code, stdout=out)
 
 
-_IMAGE_SHOW = "type: virtual-machine\narchitecture: x86_64\nfingerprint: imgfp123\n"
+_IMAGE_SHOW = "auto_update: false\nproperties:\n  architecture: amd64\n  type: disk1.img\n"
+# `lxc image info` output: the only place LXD reports the VM/container type and fingerprint.
+_IMAGE_INFO = "Fingerprint: imgfp123\nArchitecture: x86_64\nType: virtual-machine\n"
 
 
 @patch("sandbed.dev.host.in_container", return_value=False)
@@ -89,6 +91,8 @@ def _prepare(existing_pools: bool, backend: str = "microceph",
             return _result(0, "rbd\nsandbed-dev\n")
         if cmd[:3] == ["lxc", "image", "show"]:
             return _result(0, _IMAGE_SHOW)
+        if cmd[:3] == ["lxc", "image", "info"]:
+            return _result(0, _IMAGE_INFO)
         return _result(0, "")
 
     with (
@@ -186,6 +190,8 @@ def test_prepare_record_contains_backend_and_source_fields(tmp_path) -> None:
             return _result(1, "")
         if cmd[:3] == ["lxc", "image", "show"]:
             return _result(0, _IMAGE_SHOW)
+        if cmd[:3] == ["lxc", "image", "info"]:
+            return _result(0, _IMAGE_INFO)
         return _result(0, "")
 
     with (
@@ -213,6 +219,8 @@ def test_prepare_microceph_record_contains_osd_size_and_microceph() -> None:
             return _result(0, "sandbed-dev\n")
         if cmd[:3] == ["lxc", "image", "show"]:
             return _result(0, _IMAGE_SHOW)
+        if cmd[:3] == ["lxc", "image", "info"]:
+            return _result(0, _IMAGE_INFO)
         return _result(0, "")
 
     with (
@@ -243,6 +251,8 @@ def test_prepare_imports_the_pinned_image_once_and_records_it() -> None:
         if cmd[:3] == ["lxc", "image", "show"]:
             shows += 1
             return _result(0, _IMAGE_SHOW) if shows > 1 else _result(1, "")
+        if cmd[:3] == ["lxc", "image", "info"]:
+            return _result(0, _IMAGE_INFO)
         return _result(0, "")
 
     with (
@@ -253,7 +263,9 @@ def test_prepare_imports_the_pinned_image_once_and_records_it() -> None:
     ):
         host.prepare_host("50G")
     copied = [c for c in calls if c[:3] == ["lxc", "image", "copy"]]
-    assert copied == [["lxc", "image", "copy", "ubuntu:26.04/cloud", "local:", "--alias", "26.04"]]
+    assert copied == [
+        ["lxc", "image", "copy", "ubuntu:26.04", "local:", "--alias", "26.04", "--vm"]
+    ]
     assert captured["image_remote"] == "ubuntu"
     assert captured["image_alias"] == "26.04"
     assert captured["image_fingerprint"] == "imgfp123"
@@ -275,7 +287,9 @@ def test_prepare_rejects_a_staged_image_of_the_wrong_type() -> None:
         if cmd[:3] == ["sudo", "microceph.rados", "lspools"]:
             return _result(0, "sandbed-dev\n")
         if cmd[:3] == ["lxc", "image", "show"]:
-            return _result(0, "type: container\narchitecture: x86_64\n")
+            return _result(0, _IMAGE_SHOW)
+        if cmd[:3] == ["lxc", "image", "info"]:
+            return _result(0, "Fingerprint: x\nArchitecture: x86_64\nType: container\n")
         return _result(0, "")
 
     with (

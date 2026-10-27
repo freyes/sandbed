@@ -21,7 +21,8 @@ STORAGE_POOL = "sandbed-dev"  # LXD pool and RBD pool prepared by `sandbed dev h
 # The single pinned VM image `sandbed dev` uses. `host prepare` imports it once into LXD's default
 # project; each lab's `terraform/dev-network` then copies from it via the `local:` remote (no
 # network). `record.py` DEFAULT_CONFIG["image_alias"] must equal this alias so prepare and create
-# cannot drift. The `/cloud` source suffix selects the virtual-machine variant on `remote`.
+# cannot drift. The `remote` alias has both a container and a VM image; `host prepare` passes
+# `--vm` to pick the VM one.
 IMAGE = {
     "remote": "ubuntu",
     "alias": "26.04",
