@@ -11,6 +11,7 @@ import os
 import shutil
 import socket
 import subprocess
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from .errors import HostError, InputError
 from .labs import IMAGE, STORAGE_POOL
 from .paths import state_root
 from .store import atomic_write_json
+from .systemd import MIN_SYSTEMD, bus_env, parse_version
 
 MIN_FREE_GIB = 50  # provisional; calibrate on the qualified host
 PREP_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prep-host.sh"
@@ -42,14 +44,14 @@ class Check:
 PROBE_TIMEOUT = 30.0
 
 
-def _probe(cmd: list[str]) -> tuple[int, str]:
+def _probe(cmd: list[str], env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """Read-only check command: never prompts (stdin closed, `sudo -n`) and never hangs.
     Returns (returncode, stdout); 124 on timeout, 127 if the program is missing."""
-    argv = ["sudo", "-n", *cmd[1:]] if cmd[0] == "sudo" else cmd
+    argv = ["sudo", "-n", *cmd[1:]] if cmd[0] == "sudo" and cmd[1:2] != ["-n"] else cmd
     try:
         done = subprocess.run(
             argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=PROBE_TIMEOUT,
+            timeout=PROBE_TIMEOUT, env=None if env is None else dict(env),
         )
     except subprocess.TimeoutExpired:
         return 124, ""
@@ -159,6 +161,45 @@ def _pool_field(out: str, field: str) -> str | None:
     return None
 
 
+def check_systemd_user() -> Check:
+    """Read-only: a user manager reachable with the bus env, and systemd new enough for jobs."""
+    env = bus_env(os.environ, os.getuid())
+    code, out = _probe(["systemd-run", "--version"], env)
+    version = parse_version(out) if code == 0 else None
+    manager_ok = _probe(["systemctl", "--user", "show-environment"], env)[0] == 0
+    ok = version is not None and version >= MIN_SYSTEMD and manager_ok
+    linger_code, linger_out = _probe(
+        ["loginctl", "show-user", str(os.getuid()), "-p", "Linger"], env
+    )
+    linger = linger_out.partition("=")[2].strip() if linger_code == 0 else ""
+    detail = (
+        f"systemd {version if version is not None else 'not found'}, "
+        f"user manager {'reachable' if manager_ok else 'unreachable'}, "
+        f"linger {linger or 'unknown'}"
+    )
+    return Check(
+        "systemd-user", ok, detail,
+        "enable a user manager: sudo loginctl enable-linger $USER, then export "
+        f"XDG_RUNTIME_DIR=/run/user/$(id -u) (needs systemd >= {MIN_SYSTEMD})",
+    )
+
+
+def check_sudo() -> Check:
+    """Read-only: passwordless sudo as a session with no controlling terminal sees it.
+
+    Background jobs run without a tty; sudo's default `timestamp_type=tty` does not share a
+    terminal's cached `sudo -v` ticket, so a plain `sudo -n true` could report a false OK.
+    """
+    argv = ["sudo", "-n", "true"]
+    if shutil.which("setsid"):
+        argv = ["setsid", "-w", *argv]
+    return Check(
+        "sudo", _ok(argv), " ".join(argv),
+        "background jobs run without a terminal, so cached 'sudo -v' credentials do not "
+        "carry over: allow passwordless sudo (NOPASSWD) for this user",
+    )
+
+
 def check_host() -> list[Check]:
     """Read-only. Never installs, creates or deletes anything."""
     container = in_container()
@@ -172,8 +213,8 @@ def check_host() -> list[Check]:
     lxd_ok = _ok(["lxc", "query", "/1.0"])
 
     checks: list[Check] = [
-        Check("sudo", _ok(["sudo", "true"]), "sudo -n true",
-              "run `sudo -v` first or allow passwordless sudo for the MicroCeph commands"),
+        check_sudo(),
+        check_systemd_user(),
         Check("kvm", os.path.exists("/dev/kvm"), "/dev/kvm", "enable KVM on the host"),
         Check("nested-virt", nested_ok, nested_detail, "enable nested virtualization"),
         Check("lxd", lxd_ok, "lxc query /1.0", "run `sandbed dev host prepare`"),

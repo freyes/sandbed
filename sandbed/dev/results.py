@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 import click
 
 from .errors import DevError
 
 SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class Outcome:
+    payload: dict
+    human: str
+    code: int
 
 
 def envelope(command: str, status: str, **fields: object) -> dict:
@@ -43,5 +51,5 @@ def emit(payload: dict, *, json_mode: bool, human: str = "") -> None:
     if json_mode:
         click.echo(json.dumps(payload, sort_keys=False))
         return
-    failed = payload["status"] != "succeeded"
+    failed = payload["status"] not in ("succeeded", "running")
     click.echo(human or payload.get("message") or payload["status"], err=failed)

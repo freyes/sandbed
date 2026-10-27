@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 
+from sandbed.cli import cli
 from sandbed.dev import host
 from sandbed.dev.errors import HostError, InputError
 
@@ -368,7 +371,7 @@ def test_pool_driver_none_when_pool_absent(_fake_out) -> None:
 
 
 _BARE_METAL_NAMES = [
-    "sudo", "kvm", "nested-virt", "lxd",
+    "sudo", "systemd-user", "kvm", "nested-virt", "lxd",
     "microceph", "ceph-osd-up", "rbd-pool", "lxd-pool",
     "image",
     "terraform", "snapcraft", "squashfs-tools", "disk",
@@ -566,3 +569,128 @@ def test_lxd_vm_remediation_says_reload_when_devices_arrived_after_start() -> No
 def test_lxd_vm_remediation_points_at_devices_when_missing() -> None:
     check = _lxd_vm(devices_present=False)
     assert check.remediation.startswith("pass through the vm-devices first")
+
+
+# --- systemd-user and tty-less sudo -------------------------------------------
+
+_SYSTEMD_REMEDIATION = (
+    "enable a user manager: sudo loginctl enable-linger $USER, then export "
+    "XDG_RUNTIME_DIR=/run/user/$(id -u) (needs systemd >= 240)"
+)
+_SUDO_REMEDIATION = (
+    "background jobs run without a terminal, so cached 'sudo -v' credentials do not "
+    "carry over: allow passwordless sudo (NOPASSWD) for this user"
+)
+
+
+def _systemd_probe(version_out=(0, "systemd 255 (255.4-1)"), manager=0, linger=(0, "Linger=yes")):
+    def fake(cmd, env=None):
+        if cmd[0] == "systemd-run":
+            return version_out
+        if cmd[0] == "systemctl":
+            return manager, ""
+        if cmd[0] == "loginctl":
+            return linger
+        raise AssertionError(cmd)
+
+    return patch("sandbed.dev.host._probe", side_effect=fake)
+
+
+def test_systemd_user_ok_when_version_255_and_user_manager_reachable() -> None:
+    with _systemd_probe():
+        check = host.check_systemd_user()
+    assert check.name == "systemd-user" and check.ok is True
+    assert "255" in check.detail and "linger yes" in check.detail
+
+
+def test_systemd_user_probes_use_the_bus_env_and_read_only_argv() -> None:
+    with patch("sandbed.dev.host._probe", return_value=(0, "systemd 255")) as probe:
+        host.check_systemd_user()
+    argvs = [c.args[0] for c in probe.call_args_list]
+    assert ["systemd-run", "--version"] in argvs
+    assert ["systemctl", "--user", "show-environment"] in argvs
+    for call in probe.call_args_list:
+        assert call.args[1] is not None and "PATH" in call.args[1]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"version_out": (127, "")},  # missing
+        {"version_out": (0, "systemd 239 (239-1)")},  # old
+        {"manager": 1},  # no user manager
+    ],
+    ids=["missing", "old", "no-user-manager"],
+)
+def test_systemd_user_fails_with_remediation(kwargs) -> None:
+    with _systemd_probe(**kwargs):
+        check = host.check_systemd_user()
+    assert check.ok is False
+    assert check.remediation == _SYSTEMD_REMEDIATION
+
+
+@pytest.mark.parametrize(
+    "linger, word",
+    [((0, "Linger=yes"), "yes"), ((0, "Linger=no"), "no"), ((1, ""), "unknown")],
+)
+def test_linger_state_only_changes_the_detail(linger, word) -> None:
+    with _systemd_probe(linger=linger):
+        check = host.check_systemd_user()
+    assert check.ok is True
+    assert f"linger {word}" in check.detail
+
+
+@patch("sandbed.dev.host.subprocess.run", return_value=_proc(0))
+def test_sudo_runs_without_a_controlling_terminal_when_setsid_exists(fake_run) -> None:
+    with patch("sandbed.dev.host.shutil.which", return_value="/usr/bin/setsid"):
+        check = host.check_sudo()
+    assert check.name == "sudo" and check.ok is True
+    assert fake_run.call_args.args[0] == ["setsid", "-w", "sudo", "-n", "true"]
+    assert fake_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
+    assert fake_run.call_args.kwargs["timeout"] == host.PROBE_TIMEOUT
+
+
+@patch("sandbed.dev.host.subprocess.run", return_value=_proc(0))
+def test_sudo_falls_back_to_plain_sudo_without_setsid(fake_run) -> None:
+    with patch("sandbed.dev.host.shutil.which", return_value=None):
+        host.check_sudo()
+    assert fake_run.call_args.args[0] == ["sudo", "-n", "true"]
+    assert fake_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
+
+
+@patch("sandbed.dev.host.subprocess.run", return_value=_proc(1))
+def test_sudo_notty_failure_carries_the_nopasswd_remediation(_run) -> None:
+    check = host.check_sudo()
+    assert check.ok is False
+    assert check.remediation == _SUDO_REMEDIATION
+
+
+@patch("sandbed.dev.host.in_container", return_value=False)
+@patch("sandbed.dev.host.shutil.disk_usage", return_value=MagicMock(free=10 << 30))
+@patch("sandbed.dev.host.subprocess.run")
+def test_new_checks_use_no_mutating_verb_and_appear_in_the_payload(fake_run, _u, _ic) -> None:
+    fake_run.return_value = _proc(1)
+    checks = host.check_host()
+    with patch("sandbed.dev.host.host_facts", return_value={}):
+        payload = host.checks_payload(checks)
+    names = [c["name"] for c in payload["checks"]]
+    assert names[:2] == ["sudo", "systemd-user"]
+    verbs = {"install", "create", "init", "bootstrap", "add", "enable", "delete", "start"}
+    for call in fake_run.call_args_list:
+        assert not verbs & set(call.args[0]), call.args[0]
+        assert call.args[0][:2] != ["systemd-run", "true"]
+
+
+def test_host_check_json_exits_3_when_only_systemd_user_fails() -> None:
+    passing = [host.Check("sudo", True, "ok"), host.Check("kvm", True, "ok"),
+               host.Check("systemd-user", False, "unreachable", _SYSTEMD_REMEDIATION)]
+    with (
+        patch("sandbed.dev.commands.check_host", return_value=passing),
+        patch("sandbed.dev.host.host_facts",
+              return_value={"storage_backend": "dir", "in_container": False}),
+    ):
+        result = CliRunner().invoke(cli, ["dev", "host", "check", "--json"])
+    payload = json.loads(result.output)
+    assert result.exit_code == 3
+    assert payload["ok"] is False
+    assert [c["name"] for c in payload["checks"] if not c["ok"]] == ["systemd-user"]
