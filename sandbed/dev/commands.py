@@ -8,7 +8,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from . import detach
+from . import jobs, systemd
 from .build import build as build_artifact
 from .context import LabContext, open_lab
 from .deploy import deploy as deploy_artifact
@@ -23,10 +23,11 @@ from .provision import provision
 from .record import DEFAULT_CONFIG, LabRecord, LabStore, config_hash
 from .report import build_result, write_result
 from .scenarios import NAME, Outcome, run_scenario
-from .state import FAILED, INTERRUPTED, RUNNING, SUCCEEDED, AttemptLog, now
+from .state import RUNNING, AttemptLog, now
 from .store import LockBusy, atomic_write_json, ensure_private_dir, read_json
 
 SUPPORTED_SCENARIOS = (NAME,)
+SUPPORTED_PROVIDER_PROFILE = ("manual", "single-node")
 
 
 def new_run(ctx: LabContext, kind: str) -> str:
@@ -66,7 +67,7 @@ def host_prepare(
 
 def create(label: str, *, provider: str, profile: str, overrides: dict) -> dict:
     validate_label(label)
-    if (provider, profile) != ("manual", "single-node"):
+    if (provider, profile) != SUPPORTED_PROVIDER_PROFILE:
         raise InputError("milestone 1 supports only --provider manual --profile single-node")
     config = {**DEFAULT_CONFIG, **{k: v for k, v in overrides.items() if v is not None}}
     reg, uid = Registry(), os.getuid()
@@ -107,17 +108,10 @@ def create(label: str, *, provider: str, profile: str, overrides: dict) -> dict:
             "human": f"lab {label} ready at {record.vm_address}"}
 
 
-def build(
-    label: str, source: str, include: tuple[str, ...], *,
-    started: detach.Started | None = None,
-) -> dict:
-    """`started(ids, run_dir)` is called once the run exists and the lab lock is held (the
-    detached worker's start handshake)."""
+def build(label: str, source: str, include: tuple[str, ...]) -> dict:
     require_host(only=("snapcraft", "squashfs-tools"))
     with open_lab(label, mutate=False) as ctx:
         run_id = new_run(ctx, "build")
-        if started:
-            started(_ids(ctx, run_id), ctx.paths.run(run_id))
         try:
             prov = build_artifact(ctx, run_id, Path(source), list(include))
         except DevError as err:
@@ -129,15 +123,6 @@ def build(
                          "source_head": prov["source"]["head"],
                          "source_content_sha256": prov["source"]["content_sha256"]},
             "human": prov["artifact_id"]}
-
-
-def build_detached(label: str, source: str, include: tuple[str, ...]) -> dict:
-    """Start `build` in a background worker. Refusals (unknown or busy lab, host not ready) still
-    fail here; the build's own outcome lands in `<run>/result.json` and `dev status`."""
-    Registry().find(label, os.getuid())  # an unknown lab fails before anything is forked
-    return detach.start(
-        "build", lambda started: build(label, source, include, started=started)
-    )
 
 
 def deploy(label: str, artifact_id: str) -> dict:
@@ -178,60 +163,42 @@ def run_test(label: str, scenario: str) -> dict:
     return {"status": status, **result}
 
 
-def _run_state(attempts: list, result: dict | None) -> str:
-    """State of a run: its recorded outcome, else what its attempts say."""
-    if result is not None:
-        return str(result["status"])
-    if any(a.state == RUNNING and a.controller_alive() for a in attempts):
-        return RUNNING
-    if any(a.state in (RUNNING, INTERRUPTED) for a in attempts):
-        return INTERRUPTED
-    if any(a.state == FAILED for a in attempts):
-        return FAILED
-    return SUCCEEDED if attempts else "unknown"
-
-
-def _last_run(paths, record, log: AttemptLog) -> dict | None:
-    run_id = record.last_run_id
-    if not run_id:
-        return None
-    meta = read_json(paths.run(run_id) / "run.json") or {}
-    result = read_json(paths.run(run_id) / "result.json")
-    attempts = [a for a in log.attempts() if a.run_id == run_id]
-    last: dict = {"run_id": run_id, "kind": meta.get("kind"),
-                  "state": _run_state(attempts, result)}  # type: ignore[arg-type]
-    if isinstance(result, dict):
-        last["artifact_id"] = result.get("artifact_id")
-        last["result"] = result
-    return last
-
-
 def status(label: str) -> dict:
     try:
         with open_lab(label, mutate=False) as ctx:
-            return _status_fields(label, ctx.entry, ctx.paths, ctx.record, ctx.log, busy=False)
+            rec = ctx.record
+            return {
+                **_ids(ctx, rec.last_run_id),
+                "provisioning_state": rec.provisioning_state,
+                "vm_address": rec.vm_address,
+                "installed_artifact_id": rec.installed_artifact_id,
+                "blocked_reason": ctx.log.blocked_reason(),
+                "attempts": [asdict(a) for a in ctx.log.attempts()],
+                "human": f"{label}: {rec.provisioning_state}",
+            }
     except LockBusy:
-        # A running command (a detached build, typically) holds the lab lock for its whole run;
-        # status must still answer, so read the atomically-written files without it.
-        reg = Registry()
-        entry = reg.find(label, os.getuid())
-        paths = lab_paths(entry.lab_uuid, reg.root)
-        return _status_fields(label, entry, paths, LabStore(paths).load(),
-                              AttemptLog(paths.attempts), busy=True)
+        return _busy_status(label)
 
 
-def _status_fields(label: str, entry: LabEntry, paths, record, log: AttemptLog, *,
-                   busy: bool) -> dict:
+def _busy_status(label: str) -> dict:
+    """Lock-free read for a lab another process is working on: no reconcile, no writes."""
+    entry = Registry().find(label, os.getuid())
+    paths = lab_paths(entry.lab_uuid)
+    rec = LabStore(paths).load()
+    attempts = AttemptLog(paths.attempts).attempts()
+    bus = systemd.bus_env(os.environ, os.getuid())
+    active = jobs.find_active(entry.lab_uuid, lambda unit: systemd.show(unit, env=bus))
+    running = next((a for a in reversed(attempts) if a.state == RUNNING), None)
     return {
-        "lab_id": entry.lab_uuid, "label": entry.label, "run_id": record.last_run_id,
-        "busy": busy,
-        "provisioning_state": record.provisioning_state,
-        "vm_address": record.vm_address,
-        "installed_artifact_id": record.installed_artifact_id,
-        "blocked_reason": log.blocked_reason(),
-        "last_run": _last_run(paths, record, log),
-        "attempts": [asdict(a) for a in log.attempts()],
-        "human": f"{label}: {record.provisioning_state}" + (", busy" if busy else ""),
+        "lab_id": entry.lab_uuid, "label": entry.label, "run_id": rec.last_run_id,
+        "provisioning_state": rec.provisioning_state,
+        "vm_address": rec.vm_address,
+        "installed_artifact_id": rec.installed_artifact_id,
+        "attempts": [asdict(a) for a in attempts],
+        "busy": True,
+        "active_job": active.job_id if active else None,
+        "blocked_reason": f"{running.stage} is still running" if running else None,
+        "human": f"{label}: {rec.provisioning_state} (busy)",
     }
 
 

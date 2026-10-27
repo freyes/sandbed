@@ -153,7 +153,7 @@ def test_open_lab_on_a_held_lock_is_an_input_category_error(tmp_path) -> None:
 
 
 def test_held_lab_lock_surfaces_as_input_error_through_the_cli(tmp_path, monkeypatch) -> None:
-    """The published CLI contract reports lock contention as exit 2 / failure_category input."""
+    """`status` stays readable under a held lock (busy: true); a mutating open still exits 2."""
     import os
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
@@ -174,13 +174,17 @@ def test_held_lab_lock_surfaces_as_input_error_through_the_cli(tmp_path, monkeyp
     proc.start()
     try:
         assert ready.wait(10)
-        result = CliRunner().invoke(
-            cli, ["dev", "collect", "--id", "a", "--run", "r1", "--json"])
+        monkeypatch.setattr("sandbed.dev.commands.systemd.show", lambda unit, env=None: None)
+        result = CliRunner().invoke(cli, ["dev", "status", "--id", "a", "--json"])
+        with pytest.raises(LockBusy) as exc_info:
+            with open_lab("a", mutate=True):
+                pass
     finally:
         release.set()
         proc.join(10)
     payload = json.loads(result.output)
-    assert result.exit_code == 2
-    assert payload["status"] == "failed"
-    assert payload["failure_category"] == "input"
-    assert "lock is held" in payload["message"]
+    assert result.exit_code == 0
+    assert payload["busy"] is True
+    assert exc_info.value.exit_code == 2
+    assert exc_info.value.category is FailureCategory.INPUT
+    assert "lock is held" in str(exc_info.value)

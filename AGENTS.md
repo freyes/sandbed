@@ -16,7 +16,7 @@ CI (`.github/workflows/ci.yml`) runs all of the above. Keep them green.
 - `sandbed/`: package, one module per concern. `cli.py` is a click group with two subcommands: `sunbeam` (legacy phases) and `dev` (development labs, `sandbed/dev/`).
 - `terraform/`: `network/` is shared. `manual/` and `maas/` are provider modules. `maas-config/` configures MAAS (Canonical `maas` provider) from `maas/`'s local state. `dev-network/` and `dev-manual/` are copied per lab by `sandbed dev` and own only that lab's resources.
 - `manifests/`, `templates/`: Jinja2 templates. `hooks/`: user hook scripts. `docs/`: user docs.
-- `skills/snap-openstack-dev/`: agent skill for using `sandbed dev`. `sandbed-design.md`: design doc.
+- `skills/snap-openstack-dev/`: agent skill for using `sandbed dev`. `sandbed-design.md`: design doc. `sandbed/dev/` also holds the detached-job code (`jobs.py` store, `worker.py`, `runjob.py`, `systemd.py`, `jobcmds.py`).
 
 ## Rules
 - Update `docs/` and `sandbed-design.md` when changing CLI flags, phases, or paths.
@@ -31,3 +31,4 @@ CI (`.github/workflows/ci.yml`) runs all of the above. Keep them green.
 - `sandbed/dev/` stays independent of the legacy phase machinery: it may import only `shell.run` and `sshkey.ensure_key` from the rest of the package (`tests/test_dev_isolation.py` enforces it). Dev state lives under `$XDG_STATE_HOME/sandbed/dev`, never in the legacy state file.
 - The `sandbed dev` JSON `schema_version`, exit codes, failure categories and `INTERFACE_VERSION` (`sandbed/dev/capabilities.py`) are a public interface. Change one, bump the version, and update `skills/snap-openstack-dev/` and `docs/development-labs.md`.
 - `terraform/dev-*` must never manage the shared LXD pool (`sandbed-dev`) nor read `terraform/maas*` state (`tests/test_dev_terraform.py`).
+- Long `sandbed dev` commands run under `systemd-run --user` via `sandbed.dev.worker`. The job directory contract (`$XDG_STATE_HOME/sandbed/dev/jobs/<job_id>/`) and the `--detach` / `sandbed dev job` surface are part of the public interface: change them with a version bump and update the skill and docs. Tests must never call real `systemd-run` or `systemctl`; the conftest guard enforces it and is a no-op only under `SANDBED_DEV_INTEGRATION=1` (`tests/test_dev_acceptance_integration.py`).

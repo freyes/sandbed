@@ -395,13 +395,40 @@ hooks with `sandbed sunbeam`; see `docs/development-labs.md` for usage.
 | Decision | Choice |
 |---|---|
 | Scope | manual provider, one hyperconverged VM, amd64, local execution, one scenario (`bootstrap-and-launch` v1) |
-| Isolation | per-lab LXD project `sbd-<8 hex>`, bridge `sbd-<8 hex>-m` (bridges are not project-scoped), profile, volumes, Terraform state, SSH key (the image is shared, see below) |
+| Isolation | per-lab LXD project `sbd-<8 hex>`, bridge `sbd-<8 hex>-m` (bridges are not project-scoped), profile, image, volumes, Terraform state, SSH key |
 | Shared host storage | RBD pool and LXD ceph pool `sandbed-dev` (microceph) or LXD `dir` pool `sandbed-dev` (dir), created by `sandbed dev host prepare`, never managed or removed by a lab |
-| Shared host image | Ubuntu 26.04 VM image (x86_64), imported by `sandbed dev host prepare` into LXD's default project and used by every lab by fingerprint (lab projects set `features.images=false`; the Terraform LXD provider cannot copy it into a project over the unix socket, only via `core.https_address`); recorded in `host.json` as `image_remote`/`image_alias`/`image_fingerprint` |
+| Shared host image | Ubuntu 26.04 VM image (x86_64), imported by `sandbed dev host prepare` into LXD's default project and copied into each lab project by `dev-network` via the `local:` remote (no network); recorded in `host.json` as `image_remote`/`image_alias`/`image_fingerprint` |
 | In-container storage | `dir` pool; outer admin passes nesting + KVM/vhost/tun devices. `--storage-backend auto|microceph|dir` (default `auto`), `--storage-source PATH`. `zfs.delegate` rejected: zvols aren't namespaced (lxc/incus#739); `ceph` driver needs krbd, not container-usable |
-| Terraform | `terraform/dev-network` (project, bridge) and `terraform/dev-manual` (profile, volume, VM), copied per lab |
+| Terraform | `terraform/dev-network` (project, bridge, image) and `terraform/dev-manual` (profile, volume, VM), copied per lab |
 | State | `$XDG_STATE_HOME/sandbed/dev`; atomic JSON, per-lab flock, host registry lock, stage attempts with orphan reconciliation |
 | Artifact | frozen git snapshot (snapcraft derives the version from git), `snapcraft pack`, provenance, `snap install --dangerous`, installed squashfs checksum compared with provenance |
 | Guest access | Sunbeam local-access mode: floating IPs are reachable from the lab VM only; no external NIC or LXD bridge. The floating network (`172.16.2.0/24`) is pinned explicitly in the manifest |
 | Failure policy | collect diagnostics, preserve the lab; a failed bootstrap needs a new lab |
-| Public interface | `--json` envelope `schema_version` 1, exit codes 0/2/3/4/5/6/130, `sandbed dev capabilities` interface version 3 (`dev build --detach`: `status: running` envelope, `dev status` `busy` and `last_run`) (storage backends `microceph`, `dir`) |
+| Public interface | `--json` envelope `schema_version` 1, exit codes 0/2/3/4/5/6/130, `sandbed dev capabilities` interface version 3 (storage backends `microceph`, `dir`; `--detach` on long commands, the `sandbed dev job status, logs, wait, cancel and list` group, launch envelope `status: running`) |
+
+### Detached jobs
+
+Long commands (`host prepare`, `create`, `build`, `deploy`, `test`, `collect`, `destroy`) run as
+transient `systemd-run --user` units whether or not `--detach` is given. The unit's main process is
+`python -m sandbed.dev.worker --job-id <id>` (the worker), which runs the command through
+`cli.build_outcome` and writes the envelope to `result.json`. The unit's `ExecStopPost` is the same
+module with `--finalize` (the finalizer): it records `exit.json` and, if no result exists,
+synthesizes a failed envelope. The job store is `$XDG_STATE_HOME/sandbed/dev/jobs/<job_id>/`, with
+`job.json` written once and every later fact in its own single-writer file (`launched.json`,
+`started.json`, `result.json`, `exit.json`), so nothing is read-modify-written by two processes.
+`sandbed dev job` commands read the store plus `systemctl --user show` and take no lock.
+
+| Decision | Rationale |
+|---|---|
+| systemd `--user` | survives the launching terminal, needs no root, gives cgroup kill, a runtime limit and a queryable state; linger keeps it alive after logout |
+| `result.json` persisted | the unit runs with `--collect`, which unloads a failed unit, so systemd cannot answer later |
+| `KillMode=mixed`, `TimeoutStopSec=60s` | only the worker gets SIGTERM, so Terraform sees one interrupt and the worker stops its process groups once; stragglers get SIGKILL |
+| `EnvironmentFile` (0600, allowlist) | `systemd-run -E` would put the environment in argv, visible in `ps` |
+| refuse hostile paths | `check_launchable` rejects whitespace and `" ' \ $ % ;` in the interpreter and job paths instead of escaping, because systemd parses them differently across versions |
+| per-command `RuntimeMaxSec` | backstop derived from the enumerated stage deadlines (`jobs.RUNTIME_MAX_SEC`): ceil(1.25 x sum) + 120 s; a responsive worker ends `interrupted` (SIGTERM), a hung one `failed` ("worker exceeded RuntimeMaxSec"), never `succeeded`; `job.service_result` is `timeout` in both cases |
+| tty-less `sudo` check | jobs have no terminal, and a `sudo -v` ticket is per-tty, so the gate runs `sudo -n true` under `setsid -w` |
+| no fallback | no non-systemd path and no opt-out; the gate fails with exit 3 and a remediation |
+
+The `job` commands exit 0 whenever the inspection worked. Exit codes, failure categories and
+`schema_version` are unchanged. Tests never call real `systemd-run` or `systemctl`; a conftest
+guard enforces it except under `SANDBED_DEV_INTEGRATION=1`.

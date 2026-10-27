@@ -30,6 +30,19 @@ def command_paths(group: click.Group, prefix: str = "") -> list[str]:
     return paths
 
 
+def detach_command_paths(group: click.Group, prefix: str = "") -> list[str]:
+    """Leaf command paths below `group` that accept `--detach`, derived from the click tree."""
+    paths: list[str] = []
+    for name, cmd in sorted(group.commands.items()):
+        if cmd.hidden:
+            continue
+        if isinstance(cmd, click.Group):
+            paths += detach_command_paths(cmd, f"{prefix}{name} ")
+        elif any(param.name == "detach" for param in cmd.params):
+            paths.append(f"{prefix}{name}")
+    return paths
+
+
 def build_identity() -> dict:
     """sandbed version plus, in a source checkout, the git revision and dirty flag."""
     try:
@@ -53,6 +66,7 @@ def capabilities(group: click.Group) -> dict:
     return {
         "interface_version": INTERFACE_VERSION,
         "commands": command_paths(group),
+        "detach_commands": detach_command_paths(group),
         "providers": PROVIDERS,
         "profiles": PROFILES,
         "scenarios": SCENARIOS,

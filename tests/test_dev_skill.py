@@ -26,7 +26,7 @@ def test_every_command_the_skill_mentions_exists() -> None:
     assert "dev" in cli.commands
     mentioned = set()
     for path in FILES:
-        mentioned |= set(re.findall(r"sandbed dev ((?:host )?[a-z]+)", path.read_text()))
+        mentioned |= set(re.findall(r"sandbed dev ((?:host |job )?[a-z]+)", path.read_text()))
     assert mentioned and mentioned <= valid, mentioned - valid
 
 
@@ -44,3 +44,28 @@ def test_exit_code_table_matches_the_contract() -> None:
 
 def test_skill_requires_the_current_interface_version() -> None:
     assert f"`interface_version` is `{INTERFACE_VERSION}`" in (SKILL_DIR / "SKILL.md").read_text()
+
+
+def test_skill_job_fields_exist() -> None:
+    text = "\n".join(p.read_text() for p in FILES)
+    source = (Path(__file__).resolve().parents[1] / "sandbed" / "dev" / "jobcmds.py").read_text()
+    for documented, key in [
+        ("job.state", "state"), ("current_stage", "current_stage"),
+        ("timed_out", "timed_out"), ("next_offset", "next_offset"),
+        ("cancelled", "cancelled"),
+    ]:
+        assert documented in text, documented
+        assert f'"{key}"' in source, key
+
+
+def test_skill_checks_fail_when_a_command_is_undocumented(monkeypatch, tmp_path) -> None:
+    import pytest
+
+    copies = []
+    for path in FILES:
+        copy = tmp_path / path.name
+        copy.write_text(path.read_text().replace("sandbed dev job wait", "REMOVED"))
+        copies.append(copy)
+    monkeypatch.setitem(globals(), "FILES", copies)
+    with pytest.raises(AssertionError):
+        test_every_published_command_is_documented_in_the_skill()

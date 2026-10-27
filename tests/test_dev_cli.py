@@ -30,6 +30,9 @@ def test_capabilities_json(fake_run) -> None:
     assert payload["storage_backends"] == ["microceph", "dir"]
     assert payload["sandbed"]["git_revision"] == "abc123"
     assert "capabilities" in payload["commands"]
+    assert INTERFACE_VERSION == 3
+    assert payload["detach_commands"] == [
+        "build", "collect", "create", "deploy", "destroy", "host prepare", "test"]
 
 
 @patch("sandbed.dev.capabilities.run", side_effect=FileNotFoundError("git not found"))
@@ -62,3 +65,53 @@ def test_use_testflinger_is_rejected_not_forwarded() -> None:
 
 def test_the_legacy_command_is_still_registered() -> None:
     assert {"sunbeam", "dev"} <= set(cli.commands)
+
+
+def test_build_outcome_success() -> None:
+    from sandbed.dev.cli import build_outcome
+
+    out = build_outcome("x", lambda: {"x": 1, "human": "ok"})
+    assert (out.code, out.human) == (0, "ok")
+    assert (out.payload["status"], out.payload["x"]) == ("succeeded", 1)
+
+
+def test_build_outcome_dev_error() -> None:
+    from sandbed.dev.cli import build_outcome
+    from sandbed.dev.errors import InputError
+
+    def body() -> dict:
+        raise InputError("bad")
+
+    out = build_outcome("x", body)
+    assert out.code == 2
+    assert out.payload["status"] == "failed"
+    assert out.payload["failure_category"] == "input"
+
+
+def test_build_outcome_unexpected_exception() -> None:
+    from sandbed.dev.cli import build_outcome
+
+    def body() -> dict:
+        raise RuntimeError("boom")
+
+    out = build_outcome("x", body)
+    assert out.code == 6
+    assert out.payload["message"].startswith("RuntimeError: ")
+
+
+def test_build_outcome_keyboard_interrupt() -> None:
+    from sandbed.dev.cli import build_outcome
+
+    def body() -> dict:
+        raise KeyboardInterrupt
+
+    out = build_outcome("x", body)
+    assert out.code == 130
+    assert out.payload["status"] == "interrupted"
+
+
+def test_build_outcome_folded_failure() -> None:
+    from sandbed.dev.cli import build_outcome
+
+    out = build_outcome("x", lambda: {"status": "failed", "exit_code": 4})
+    assert (out.code, out.payload["status"]) == (4, "failed")

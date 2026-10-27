@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import tarfile
+import time
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+from sandbed.dev import jobs, systemd
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SANDBED_DEV_INTEGRATION") != "1",
@@ -125,3 +131,156 @@ def test_exported_archive_never_contains_credentials(lab, source) -> None:
             data = tar.extractfile(member).read().decode(errors="replace")
             assert "OS_PASSWORD" not in data and "PRIVATE KEY" not in data, member.name
             assert CANARY not in data
+
+
+# --- detached jobs under the REAL systemd user manager (only the FAKE worker runs) ---------
+REPO = Path(__file__).resolve().parent.parent
+WRAPPER = REPO / "tests" / "fixtures" / "worker_wrapper.py"
+PROXY_MARKER = "http://env-file-honoured.invalid:3128"
+
+
+def _poll(predicate: Callable[[], object], what: str, timeout: float = 30.0):
+    deadline = time.monotonic() + timeout
+    while True:
+        value = predicate()
+        if value:
+            return value
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out after {timeout:g}s waiting for {what}")
+        time.sleep(0.1)
+
+
+@dataclass
+class Unit:
+    job: jobs.Job
+    argv: list[str]
+    state: Path
+    env: dict[str, str]
+
+    @property
+    def name(self) -> str:
+        return self.job.unit
+
+    def start(self, wait: bool):
+        return systemd.start(self.argv, wait=wait, env=self.env)
+
+    def exit(self) -> dict:
+        return _poll(lambda: jobs.read_exit(self.job), "exit.json (ExecStopPost)")
+
+    def result(self) -> dict:
+        return _poll(lambda: jobs.read_result(self.job), "result.json")
+
+    def systemctl(self, *args: str) -> str:
+        code, out, err = systemd._run(["systemctl", "--user", *args], timeout=30, env=self.env)
+        assert code == 0, (args, err)
+        return out
+
+
+def _skip_unless_systemd_user() -> dict[str, str]:
+    env = systemd.bus_env(os.environ, os.getuid())
+    for label, argv in (
+        ("systemd-run --user --version", ["systemd-run", "--user", "--version"]),
+        ("systemctl --user show-environment", ["systemctl", "--user", "show-environment"]),
+    ):
+        code, _, err = systemd._run(argv, timeout=30, env=env)
+        if code != 0:
+            pytest.skip(f"SANDBED_DEV_INTEGRATION=1 but `{label}` failed: {err.strip()}")
+    return env
+
+
+@pytest.fixture
+def make_unit(tmp_path, monkeypatch):
+    env = _skip_unless_systemd_user()
+    state_home = tmp_path / "xdg-state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    made: list[Unit] = []
+
+    def build(mode: str, runtime_max: int = 300) -> Unit:
+        evidence = tmp_path / f"evidence-{len(made)}"
+        evidence.mkdir()
+        job = jobs.create_job("destroy", {"lab": "detached-it"}, "detached-it", str(REPO), True)
+        jobs.write_env_file(job, jobs.worker_env({
+            "PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", str(tmp_path)),
+            "XDG_STATE_HOME": str(state_home), "HTTPS_PROXY": PROXY_MARKER,
+            "SANDBED_E2E_FAKE": mode, "SANDBED_E2E_STATE": str(evidence),
+        }))
+        argv = systemd.unit_argv(
+            job, False, sys.executable,
+            exec_argv=[sys.executable, str(WRAPPER), "--job-id", job.job_id],
+            runtime_max=runtime_max,
+        )
+        unit = Unit(job, argv, evidence, env)
+        made.append(unit)
+        return unit
+
+    def with_wait(unit: Unit) -> Unit:
+        unit.argv.insert(unit.argv.index("--collect") + 1, "--wait")
+        return unit
+
+    build.wait = with_wait  # type: ignore[attr-defined]
+    yield build
+    for unit in made:
+        for verb in ("stop", "reset-failed"):
+            systemd._run(["systemctl", "--user", verb, unit.name], timeout=90, env=env)
+    _, listing, _ = systemd._run(
+        ["systemctl", "--user", "list-units", "sandbed-dev-*", "--all", "--no-legend"],
+        timeout=30, env=env,
+    )
+    leftovers = [u.name for u in made if u.name in listing]
+    assert not leftovers, f"units left behind: {leftovers}\n{listing}"
+
+
+def test_detached_wait_run_publishes_result_and_exit(make_unit) -> None:
+    unit = make_unit.wait(make_unit("ok"))
+    client = unit.start(wait=True)
+    assert client.wait(timeout=60) == 0, client.stderr.read()
+    result = unit.result()
+    assert result["envelope"]["status"] == "succeeded" and result["exit_code"] == 0
+    assert unit.exit()["service_result"] == "success"
+    stderr = unit.job.paths.stderr
+    assert stat.S_IMODE(stderr.stat().st_mode) == 0o600
+    assert stat.S_IMODE(unit.job.paths.stdout.stat().st_mode) == 0o600
+    text = stderr.read_text()
+    assert "fake: stage one" in text and "fake: stage two" in text
+    assert f"fake: proxy={PROXY_MARKER}" in text  # EnvironmentFile honoured
+    props = systemd.show(unit.name, env=unit.env)
+    assert props is not None and props["LoadState"] == "not-found"  # --collect gc'd it
+
+
+def test_detached_stop_signals_the_worker_once_under_kill_mode_mixed(make_unit) -> None:
+    unit = make_unit("hang-until-sigterm")
+    assert unit.start(wait=False).wait(timeout=30) == 0
+    _poll(lambda: (unit.state / "child.ready").exists(), "fake child ready")
+    shown = dict(
+        line.split("=", 1)
+        for line in unit.systemctl(
+            "show", "-p", "KillMode", "-p", "RuntimeMaxUSec", "-p", "TimeoutStopUSec", unit.name
+        ).splitlines()
+    )
+    assert shown["KillMode"] == "mixed"
+    assert shown["RuntimeMaxUSec"] == "5min"
+    assert shown["TimeoutStopUSec"] == "1min"
+    systemd.stop(unit.name, 90, env=unit.env)
+    result = unit.result()
+    assert result["envelope"]["status"] == "interrupted" and result["exit_code"] == 130
+    unit.exit()
+    signals = (unit.state / "child.signals").read_text().splitlines()
+    assert signals == ["SIGTERM"], "the child must see exactly one SIGTERM (no double interrupt)"
+
+
+def test_detached_runtime_max_sec_ends_with_service_result_timeout(make_unit) -> None:
+    unit = make_unit("hang-until-sigterm", runtime_max=3)
+    assert unit.start(wait=False).wait(timeout=30) == 0
+    assert unit.exit()["service_result"] == "timeout"
+    assert unit.result()["exit_code"] in (6, 130)
+
+
+def test_detached_sigkilled_worker_gets_a_synthesized_internal_result(make_unit) -> None:
+    unit = make_unit("crash-sigkill")
+    assert unit.start(wait=False).wait(timeout=30) == 0
+    exit_info = unit.exit()
+    assert exit_info["service_result"] != "success"
+    result = unit.result()
+    assert result["exit_code"] == 6
+    assert result["envelope"]["status"] == "failed"
+    assert result["envelope"]["failure_category"] == "internal"

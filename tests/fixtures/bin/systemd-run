@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""systemd-run shim: a faithful-enough emulation of one transient service unit, no systemd.
+
+Accepts exactly the options `sandbed.dev.systemd.unit_argv` builds and fails on anything else:
+  --version | --user --quiet --collect [--wait] --unit=U --description=D --service-type=T
+  --working-directory=DIR -p KEY=VALUE ... -- COMMAND...
+
+Emulated: a clean unit environment made only of EnvironmentFile=, the main command in its own
+session with output appended to the StandardOutput=/StandardError= `append:` files, KillMode=mixed
+(stop or RuntimeMaxSec: SIGTERM to the MAIN process only, SIGKILL after TimeoutStopSec, then a
+final SIGKILL sweep of the unit's process group after ExecStopPost), ExecStopPost with
+SERVICE_RESULT / EXIT_CODE / EXIT_STATUS, and --collect (unit is gone once finished).
+
+Env knobs: SHIM_STATE (required, state dir), SHIM_FAIL_START=1, SHIM_RUNTIME_MAX_OVERRIDE and
+SHIM_STOP_TIMEOUT (seconds), SHIM_WORKER_WRAPPER (script replacing `-m sandbed.dev.worker` in
+the MAIN command only; the ExecStopPost command runs the real module).
+
+A unit's state is `$SHIM_STATE/<unit>.json`, its full argv `$SHIM_STATE/<unit>.argv`.
+"""
+import json
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import time
+
+VERSION = "systemd 255 (255.4-1ubuntu8)"
+POLL_SEC = 0.05
+FLAGS = {"--user", "--quiet", "--collect", "--wait"}
+VALUED = ("--unit", "--description", "--service-type", "--working-directory")
+
+
+class Fail(Exception):
+    pass
+
+
+def parse(argv):
+    flags, opts, props, command = set(), {}, {}, []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            command = argv[i + 1:]
+            break
+        if arg in FLAGS:
+            flags.add(arg)
+        elif arg == "-p":
+            i += 1
+            key, sep, value = argv[i].partition("=")
+            if not sep:
+                raise Fail(f"Invalid property: {argv[i]}")
+            props[key] = value
+        elif arg.partition("=")[0] in VALUED and "=" in arg:
+            key, _, value = arg.partition("=")
+            opts[key] = value
+        else:
+            raise Fail(f"Unknown option '{arg}'.")
+        i += 1
+    for key in VALUED:
+        if key not in opts:
+            raise Fail(f"Missing {key}=")
+    if not command:
+        raise Fail("Command line to execute required.")
+    return flags, opts, props, command
+
+
+def read_env_file(path):
+    """systemd EnvironmentFile: NAME="value" with \\" and \\\\ escapes."""
+    env = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh.read().splitlines():
+            name, sep, raw = line.partition("=")
+            if not sep or not name.strip():
+                continue
+            if not raw.startswith('"'):
+                env[name.strip()] = raw
+                continue
+            value, i = [], 1
+            while i < len(raw) and raw[i] != '"':
+                if raw[i] == "\\" and i + 1 < len(raw):
+                    i += 1
+                value.append(raw[i])
+                i += 1
+            env[name.strip()] = "".join(value)
+    return env
+
+
+def seconds(text):
+    return float(str(text).strip().removesuffix("s"))
+
+
+def append_target(spec):
+    path = spec.removeprefix("append:") if spec.startswith("append:") else None
+    return open(path, "ab") if path else subprocess.DEVNULL
+
+
+class Unit:
+    def __init__(self, state_dir, name, collect):
+        self.path = os.path.join(state_dir, f"{name}.json")
+        self.data = {"unit": name, "phase": "running", "collect": collect,
+                     "supervisor_pid": os.getpid(), "main_pid": None, "result": "success",
+                     "exec_main_status": 0, "active_state": "active", "sub_state": "running"}
+
+    def save(self, **changes):
+        self.data.update(changes)
+        tmp = f"{self.path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(self.data, fh)
+        os.replace(tmp, self.path)
+
+
+def exit_facts(returncode, stop_requested, timed_out):
+    """(SERVICE_RESULT, EXIT_CODE, EXIT_STATUS, client exit code)."""
+    if returncode < 0:
+        sig = -returncode
+        status = signal.Signals(sig).name.removeprefix("SIG")
+        clean_stop = stop_requested and sig == signal.SIGTERM
+        result = "timeout" if timed_out else ("success" if clean_stop else "signal")
+        return result, "killed", status, 128 + sig
+    result = "timeout" if timed_out else ("success" if returncode == 0 else "exit-code")
+    return result, "exited", str(returncode), returncode
+
+
+def supervise(unit, command, env, cwd, props):
+    stop = {"requested": False}
+    signal.signal(signal.SIGUSR1, lambda *_: stop.update(requested=True))
+    out, err = append_target(props.get("StandardOutput", "")), append_target(
+        props.get("StandardError", ""))
+    runtime_max = os.environ.get("SHIM_RUNTIME_MAX_OVERRIDE") or props.get("RuntimeMaxSec")
+    stop_timeout = seconds(os.environ.get("SHIM_STOP_TIMEOUT") or props.get("TimeoutStopSec", "90"))
+    main = subprocess.Popen(
+        command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+        start_new_session=True)
+    unit.save(supervisor_pid=os.getpid(), main_pid=main.pid, pgid=main.pid)
+    started = time.monotonic()
+    term_at = timed_out = None
+    while main.poll() is None:
+        now = time.monotonic()
+        if term_at is None:
+            expired = runtime_max is not None and now - started >= seconds(runtime_max)
+            if stop["requested"] or expired:
+                timed_out = expired and not stop["requested"]
+                term_at = now
+                unit.save(phase="stopping", active_state="deactivating", sub_state="stop-sigterm")
+                main.send_signal(signal.SIGTERM)  # KillMode=mixed: the main process only
+        elif now - term_at >= stop_timeout:
+            main.kill()
+            timed_out = True
+        time.sleep(POLL_SEC)
+    result, kind, status, code = exit_facts(main.returncode, stop["requested"], bool(timed_out))
+    unit.save(phase="stopping", active_state="deactivating", sub_state="stop-post",
+              exec_main_status=main.returncode if main.returncode >= 0 else 0)
+    post = props.get("ExecStopPost")
+    if post:
+        post_env = {**env, "SERVICE_RESULT": result, "EXIT_CODE": kind, "EXIT_STATUS": status}
+        subprocess.run(shlex.split(post), cwd=cwd, env=post_env, stdin=subprocess.DEVNULL,
+                       stdout=out, stderr=err)
+    try:
+        os.killpg(main.pid, signal.SIGKILL)  # final sweep of what the main process left behind
+    except ProcessLookupError:
+        pass
+    failed = result != "success"
+    unit.save(phase="finished", result=result, active_state="failed" if failed else "inactive",
+              sub_state="failed" if failed else "dead")
+    return code
+
+
+def detach(fn):
+    """Run fn in a detached supervisor; return once it signalled that the main process started."""
+    read_fd, write_fd = os.pipe()
+    if os.fork():
+        os.close(write_fd)
+        message = os.read(read_fd, 4096).decode()
+        if message != "started":
+            print(message or "unit supervisor died", file=sys.stderr)
+            return 1
+        return 0
+    os.setsid()
+    os.close(read_fd)
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    code = 1
+    try:
+        code = fn(lambda message: (os.write(write_fd, message.encode()), os.close(write_fd)))
+    finally:
+        os._exit(code)
+
+
+def run(argv):
+    state_dir = os.environ["SHIM_STATE"]
+    os.makedirs(state_dir, exist_ok=True)
+    if os.environ.get("SHIM_FAIL_START") == "1":
+        print("Failed to connect to bus: No medium found", file=sys.stderr)
+        return 1
+    flags, opts, props, command = parse(argv)
+    name = opts["--unit"]
+    with open(os.path.join(state_dir, f"{name}.argv"), "w") as fh:
+        json.dump(argv, fh)
+    env = read_env_file(props["EnvironmentFile"]) if "EnvironmentFile" in props else {}
+    wrapper = os.environ.get("SHIM_WORKER_WRAPPER")
+    if wrapper and command[1:3] == ["-m", "sandbed.dev.worker"]:
+        command = [command[0], wrapper, *command[3:]]
+    unit = Unit(state_dir, name, "--collect" in flags)
+
+    def lifecycle(announce):
+        try:
+            code = supervise_started(announce)
+        except OSError as exc:
+            announce(f"Failed to start transient service unit: {exc}")
+            return 1
+        return code
+
+    def supervise_started(announce):
+        # `exec` service type: started once the main process exists.
+        original_save = unit.save
+        announced = []
+
+        def save(**changes):
+            original_save(**changes)
+            if "main_pid" in changes and not announced:
+                announced.append(True)
+                announce("started")
+
+        unit.save = save
+        return supervise(unit, command, env, opts["--working-directory"], props)
+
+    if "--wait" in flags:
+        sink = []
+        code = lifecycle(lambda message: sink.append(message))
+        if sink and sink[0] != "started":
+            print(sink[0], file=sys.stderr)
+            return 1
+        return code
+    return detach(lifecycle)
+
+
+def main(argv):
+    if argv == ["--version"]:
+        print(VERSION)
+        return 0
+    try:
+        return run(argv)
+    except Fail as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+sys.exit(main(sys.argv[1:]))

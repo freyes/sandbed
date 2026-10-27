@@ -43,13 +43,15 @@ def write_private(path: Path, data: bytes | str) -> None:
     os.chmod(path, 0o600)
 
 
-def atomic_write_json(path: Path, data: object, *, mode: int = 0o600) -> None:
+def atomic_write_json(
+    path: Path, data: object, *, mode: int = 0o600, sort_keys: bool = True
+) -> None:
     """Write via a temp file in the same directory and rename, so readers never see a torn file."""
     ensure_private_dir(path.parent)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "w") as fh:
-            json.dump(data, fh, indent=2, sort_keys=True)
+            json.dump(data, fh, indent=2, sort_keys=sort_keys)
             fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
